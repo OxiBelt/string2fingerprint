@@ -20,7 +20,10 @@
 compile_error!("`string2fingerprint` supports Linux targets only");
 
 mod category;
+pub mod fingerprint;
 mod scores;
+#[cfg(test)]
+mod testutil;
 
 pub use category::Category;
 pub use scores::Scores;
