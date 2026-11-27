@@ -27,6 +27,13 @@ pub enum Backend {
     NeonDotProd,
     /// AArch64 with NEON: 16 bytes per `SMULL`, `SMLAL2`, and `SADALP`.
     Neon,
+    /// RISC-V 64 with RVV 1.0 and Zvdot4a8i. Reserved: the extension is not
+    /// ratified, Linux cannot report it, and this crate has no kernel for it
+    /// yet. It is never supported, and selecting it runs the scalar kernel.
+    RvvZvdot4a8i,
+    /// RISC-V 64 with RVV 1.0: `VLEN / 4` bytes per `vwmulsu.vv` and
+    /// `vwadd.wv` pair.
+    Rvv,
 }
 
 impl Backend {
@@ -66,6 +73,8 @@ impl Backend {
             Self::NeonI8mm => "neon_i8mm",
             Self::NeonDotProd => "neon_dotprod",
             Self::Neon => "neon",
+            Self::RvvZvdot4a8i => "rvv_zvdot4a8i",
+            Self::Rvv => "rvv",
         }
     }
 }
@@ -87,7 +96,14 @@ const PREFERENCE: &[Backend] = &[
     Backend::Scalar,
 ];
 
-#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+#[cfg(target_arch = "riscv64")]
+const PREFERENCE: &[Backend] = &[Backend::RvvZvdot4a8i, Backend::Rvv, Backend::Scalar];
+
+#[cfg(not(any(
+    target_arch = "x86_64",
+    target_arch = "aarch64",
+    target_arch = "riscv64"
+)))]
 const PREFERENCE: &[Backend] = &[Backend::Scalar];
 
 impl fmt::Display for Backend {
@@ -207,6 +223,8 @@ mod tests {
             Backend::NeonI8mm,
             Backend::NeonDotProd,
             Backend::Neon,
+            Backend::RvvZvdot4a8i,
+            Backend::Rvv,
         ];
         for (index, backend) in all.iter().enumerate() {
             assert!(
@@ -226,6 +244,7 @@ mod tests {
             Backend::NeonDotProd,
             Backend::Neon,
         ];
+        let riscv64 = [Backend::RvvZvdot4a8i, Backend::Rvv];
         let mut foreign = Vec::new();
         if !cfg!(target_arch = "x86_64") {
             foreign.extend(x86_64);
@@ -233,10 +252,18 @@ mod tests {
         if !cfg!(target_arch = "aarch64") {
             foreign.extend(aarch64);
         }
+        if !cfg!(target_arch = "riscv64") {
+            foreign.extend(riscv64);
+        }
         for backend in foreign {
             assert!(!backend.is_supported());
             assert_eq!(Verified::new(backend), Err(UnsupportedBackend(backend)));
         }
+    }
+
+    #[test]
+    fn reserved_backends_are_never_supported() {
+        assert!(!Backend::RvvZvdot4a8i.is_supported());
     }
 
     #[test]
