@@ -4,7 +4,7 @@ version = "0.1.0-dev"
 edition = "2024"
 rust-version = "1.100.0"
 license = "Apache-2.0"
-description = "A planned SIMD fingerprinting library for detecting malformed strings"
+description = "Scores untrusted text for malformed content and escape attempts using SIMD fingerprinting"
 repository = "https://github.com/OxiBelt/string2fingerprint"
 publish = false
 

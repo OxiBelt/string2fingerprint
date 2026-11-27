@@ -2,16 +2,19 @@
 
 ## Project Overview
 
-`string2fingerprint` is a Rust library project for detecting malformed strings
-using SIMD fingerprinting. The current crate is a scaffold. Treat the input
-contract, fingerprinting algorithm, public API, and hardware support as open
-design decisions.
+`string2fingerprint` is a Linux-only Rust library that scores untrusted text
+per category for how malformed it looks or whether it attempts to escape its
+context. It fingerprints the input and runs a small 8-bit quantized network
+whose dot-product kernel is selected at run time from the CPU features.
+`docs/design.md` specifies the input contract, fingerprint, network, and
+backend rules. Change that document together with the behavior it describes.
 
 ## Repository Structure
 
 - `Cargo.toml` and `rust-toolchain.toml` hold package metadata, lints, and the
   pinned Rust toolchain.
 - `src/` contains the library source.
+- `docs/` contains the design document.
 - `tests/scripts/` contains the Markdown checker and its tests.
 - `.github/workflows/` contains the CI workflows.
 - `README.md` gives the project status and contributor entry points.
