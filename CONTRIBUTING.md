@@ -1,7 +1,7 @@
 # Contributing to string2fingerprint
 
-Thanks for helping improve `string2fingerprint`. This project is a Rust library
-scaffold for detecting malformed strings using SIMD fingerprinting. Changes
+Thanks for helping improve `string2fingerprint`. This project is a Linux-only
+Rust library that scores untrusted text with SIMD-accelerated fingerprinting. Changes
 that define how caller-controlled input is interpreted or how CPU-specific
 instructions are selected require focused tests and independent review.
 
@@ -14,6 +14,7 @@ request notes. Run the commands in this guide from the repository root.
 | --- | --- | --- |
 | `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml` | Package metadata, dependency resolution, lints, and toolchain. | The crate, toolchain, lint policy, or dependencies change. |
 | `src/` | The Rust library. | Library code or crate-level documentation changes. |
+| `docs/` | The design document. | A contract or the specified behavior changes. |
 | `tests/scripts/` | Markdown checker and regression tests. | Documentation validation changes. |
 | `.github/workflows/` | CI workflows. | Runners or CI checks change. |
 | `README.md` | Project status and contributor entry points. | Setup, usage, or the project overview changes. |

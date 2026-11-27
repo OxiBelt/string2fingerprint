@@ -2,9 +2,10 @@
 
 ## Scope and Support
 
-`string2fingerprint` is a Rust library project for detecting malformed strings
-using SIMD fingerprinting. The current project contains a library scaffold and
-repository tooling. `main` is the development branch for triage and fixes.
+`string2fingerprint` is a Linux-only Rust library that scores untrusted text
+for malformed content and escape attempts using SIMD fingerprinting. The
+[design document](docs/design.md) states the contracts that findings are
+assessed against. `main` is the development branch for triage and fixes.
 Release support and backport commitments will be established before publication.
 
 Review repository code, documentation, dependencies, and build or CI
