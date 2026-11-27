@@ -44,10 +44,12 @@ cargo clippy --all-targets --all-features --locked -- -D warnings
 RUSTDOCFLAGS='-D warnings' cargo doc --all-features --no-deps --locked
 ```
 
-Use Python 3 for documentation checks:
+Use Python 3 for documentation checks and for the tests of the training
+tools. The tests that need NumPy are skipped without it:
 
 ```sh
 python3 -B -m unittest discover -s tests/scripts -p 'test_*.py'
+python3 -B -m unittest discover -s tools/train -p 'test_*.py'
 python3 -B tests/scripts/check_markdown_links.py --repo-root .
 ```
 

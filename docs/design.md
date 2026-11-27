@@ -137,6 +137,9 @@ size of the byte string. It validates every field and reports a fixed error
 kind without echoing model bytes. The checksum detects accidental corruption.
 It is not an authenticity check, so load models only from a trusted source.
 
+The crate embeds a default model. Its training procedure, data, and measured
+limits are documented with the [training tools](../tools/train/README.md).
+
 ## Backends
 
 A backend is one implementation of the dot-product kernel. All backends give
@@ -176,7 +179,8 @@ Rules that apply to every backend:
 - Bucket hashing uses fixed constants. An attacker who knows the model can
   search for inputs that score low, as with any published detector. The count
   cap and per-window maximum limit dilution, they do not prevent evasion.
-- Treat scores as one signal among several, and measure false positives on
-  your own traffic before enforcing on them.
+- The default model is trained on synthetic data and has not been measured on
+  real traffic. Treat scores as one signal among several, and measure false
+  positives on your own traffic before enforcing on them.
 - Unsafe Rust is confined to the target-specific kernel modules and to CPU
   feature queries. Each unsafe operation states the invariant it relies on.
