@@ -150,7 +150,7 @@ of preference, using the first whose CPU features are all present:
 | --- | --- |
 | x86-64 | AVX-512 VNNI, AVX-VNNI, AVX2, scalar |
 | AArch64 | SVE with I8MM, NEON with I8MM, NEON with DotProd, NEON, scalar |
-| RISC-V 64 | Zvdot4a8i (reserved), RVV 1.0, scalar |
+| RISC-V 64 | Zvdot4a8i (experimental, never detected), RVV 1.0, scalar |
 
 Rules that apply to every backend:
 
@@ -162,10 +162,19 @@ Rules that apply to every backend:
 - A backend that the operating system cannot report yet is never selected
   automatically. It is available only through an explicit `unsafe` opt-in in
   which the caller vouches for the CPU.
-- Zvdot4a8i is reserved. The extension is not ratified, Linux has no
-  interface that reports it, and a kernel for it ships only once it can be
-  validated on an emulator or on hardware. Until then the backend is never
-  supported, and requesting it without detection runs the scalar kernel.
+- Zvdot4a8i is experimental. The extension is not ratified and Linux has no
+  interface that reports it, so the backend is never detected and runs only
+  through the `unsafe` opt-in. Its kernel uses `vdot4asu.vv` with the
+  encoding and semantics of the draft as the Spike simulator implemented it
+  under the name `zvdot4a` at revision `6e18887`. The documentation of the
+  backend states them. The kernel was executed on that simulator only, at
+  vector lengths from 128 to 4096 bits, and on no hardware. A ratified
+  extension can differ from the draft.
+- A scorer can check the kernel of its backend against the scalar kernel on
+  built-in matrices. A caller who opts in to a backend without detection
+  should run that self-test first. The `kernel_self_test` example runs it
+  from the command line. The self-test does not drive a single 32-bit lane
+  of a vector kernel beyond its range, which no valid model does either.
 - On RISC-V, vector use is detected from the `V` bit of `AT_HWCAP`, which
   Linux clears when vector use is disabled for the process.
 - The scalar backend is safe Rust and is the reference for every other
@@ -182,5 +191,7 @@ Rules that apply to every backend:
 - The default model is trained on synthetic data and has not been measured on
   real traffic. Treat scores as one signal among several, and measure false
   positives on your own traffic before enforcing on them.
-- Unsafe Rust is confined to the target-specific kernel modules and to CPU
-  feature queries. Each unsafe operation states the invariant it relies on.
+- Unsafe Rust in the library is confined to the target-specific kernel
+  modules, to CPU feature queries, and to the opt-in that selects a backend
+  without detection. The `kernel_self_test` example calls that opt-in. Each
+  unsafe operation states the invariant it relies on.

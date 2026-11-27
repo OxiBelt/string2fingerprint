@@ -103,5 +103,8 @@ jobs:
       - name: Report the kernel backends that the tests executed
         run: cargo test --all-features --locked --lib backends_are_reported -- --nocapture
 
+      - name: Check the detected kernel backends with the self-test example
+        run: cargo run --all-features --locked --example kernel_self_test
+
       - name: Run the benchmark as a smoke test
         run: cargo test --all-features --locked --bench score

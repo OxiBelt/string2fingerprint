@@ -15,8 +15,8 @@ backend rules. Change that document together with the behavior it describes.
   pinned Rust toolchain.
 - `src/` contains the library source.
 - `models/` contains the embedded default model and its golden vectors.
-- `examples/` contains command-line tools that score input and convert a
-  training corpus into fingerprints.
+- `examples/` contains command-line tools that score input, convert a
+  training corpus into fingerprints, and check the kernel backends.
 - `tools/train/` contains the corpus generator and the training tools.
 - `docs/` contains the design document.
 - `tests/` contains Cargo integration tests, with their data in `tests/data/`.
