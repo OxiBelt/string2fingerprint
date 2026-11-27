@@ -14,6 +14,8 @@ request notes. Run the commands in this guide from the repository root.
 | --- | --- | --- |
 | `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml` | Package metadata, dependency resolution, lints, and toolchain. | The crate, toolchain, lint policy, or dependencies change. |
 | `src/` | The Rust library. | Library code or crate-level documentation changes. |
+| `tests/scripts/` | Markdown checker and regression tests. | Documentation validation changes. |
+| `scripts/ci/`, `.github/workflows/` | CI toolchain setup and workflows. | Runner, toolchain setup, or CI checks change. |
 | `README.md` | Project status and contributor entry points. | Setup, usage, or the project overview changes. |
 | `SECURITY.md` | Security scope, requirements, and private reporting. | The threat model, reporting process, or scope changes. |
 
@@ -40,6 +42,19 @@ cargo test --all-features --locked
 cargo clippy --all-targets --all-features --locked -- -D warnings
 RUSTDOCFLAGS='-D warnings' cargo doc --all-features --no-deps --locked
 ```
+
+Use Python 3 for documentation checks:
+
+```sh
+python3 -B -m unittest discover -s tests/scripts -p 'test_*.py'
+python3 -B tests/scripts/check_markdown_links.py --repo-root .
+```
+
+The link checker reads Git-tracked Markdown. Include new documents in the Git
+index for a complete check. CI runs native Rust builds and tests on Linux
+x86-64, Arm64, and RISC-V. The RISC-V job requires the repository to have
+access to the [RISE runner service](https://ci.riseproject.dev/docs/getting-started/configure).
+These jobs validate the scaffold on the selected architectures.
 
 For dependency additions, record the need, alternatives, affected features,
 license and maintenance status, and relevant source or unsafe-code review.

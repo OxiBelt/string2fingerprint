@@ -12,6 +12,8 @@ design decisions.
 - `Cargo.toml` and `rust-toolchain.toml` hold package metadata, lints, and the
   pinned Rust toolchain.
 - `src/` contains the library source.
+- `tests/scripts/` contains the Markdown checker and its tests.
+- `scripts/ci/` and `.github/workflows/` contain CI setup and workflows.
 - `README.md` gives the project status and contributor entry points.
 - `SECURITY.md` defines the security scope and private reporting process.
 
