@@ -18,6 +18,15 @@ pub enum Backend {
     AvxVnni,
     /// x86-64 with AVX2: 32 bytes per `VPMADDUBSW` and `VPMADDWD` pair.
     Avx2,
+    /// AArch64 with SVE and SVE I8MM: one vector length, 16 to 256 bytes, per
+    /// `USDOT`.
+    SveI8mm,
+    /// AArch64 with NEON and I8MM: 16 bytes per `USDOT`.
+    NeonI8mm,
+    /// AArch64 with NEON and DotProd: 16 bytes per `SDOT`.
+    NeonDotProd,
+    /// AArch64 with NEON: 16 bytes per `SMULL`, `SMLAL2`, and `SADALP`.
+    Neon,
 }
 
 impl Backend {
@@ -53,6 +62,10 @@ impl Backend {
             Self::Avx512Vnni => "avx512_vnni",
             Self::AvxVnni => "avx_vnni",
             Self::Avx2 => "avx2",
+            Self::SveI8mm => "sve_i8mm",
+            Self::NeonI8mm => "neon_i8mm",
+            Self::NeonDotProd => "neon_dotprod",
+            Self::Neon => "neon",
         }
     }
 }
@@ -65,7 +78,16 @@ const PREFERENCE: &[Backend] = &[
     Backend::Scalar,
 ];
 
-#[cfg(not(target_arch = "x86_64"))]
+#[cfg(target_arch = "aarch64")]
+const PREFERENCE: &[Backend] = &[
+    Backend::SveI8mm,
+    Backend::NeonI8mm,
+    Backend::NeonDotProd,
+    Backend::Neon,
+    Backend::Scalar,
+];
+
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
 const PREFERENCE: &[Backend] = &[Backend::Scalar];
 
 impl fmt::Display for Backend {
@@ -181,6 +203,10 @@ mod tests {
             Backend::Avx512Vnni,
             Backend::AvxVnni,
             Backend::Avx2,
+            Backend::SveI8mm,
+            Backend::NeonI8mm,
+            Backend::NeonDotProd,
+            Backend::Neon,
         ];
         for (index, backend) in all.iter().enumerate() {
             assert!(
@@ -194,11 +220,22 @@ mod tests {
     #[test]
     fn backends_of_other_architectures_are_unsupported() {
         let x86_64 = [Backend::Avx512Vnni, Backend::AvxVnni, Backend::Avx2];
+        let aarch64 = [
+            Backend::SveI8mm,
+            Backend::NeonI8mm,
+            Backend::NeonDotProd,
+            Backend::Neon,
+        ];
+        let mut foreign = Vec::new();
         if !cfg!(target_arch = "x86_64") {
-            for backend in x86_64 {
-                assert!(!backend.is_supported());
-                assert_eq!(Verified::new(backend), Err(UnsupportedBackend(backend)));
-            }
+            foreign.extend(x86_64);
+        }
+        if !cfg!(target_arch = "aarch64") {
+            foreign.extend(aarch64);
+        }
+        for backend in foreign {
+            assert!(!backend.is_supported());
+            assert_eq!(Verified::new(backend), Err(UnsupportedBackend(backend)));
         }
     }
 
@@ -209,6 +246,21 @@ mod tests {
         // with AVX2 by construction.
         if Backend::Avx512Vnni.is_supported() || Backend::AvxVnni.is_supported() {
             assert!(Backend::Avx2.is_supported());
+        }
+    }
+
+    #[test]
+    #[cfg(target_arch = "aarch64")]
+    fn aarch64_backends_imply_weaker_ones() {
+        // Every AArch64 backend is detected together with NEON, and SVE I8MM
+        // together with NEON I8MM, by construction.
+        for backend in [Backend::SveI8mm, Backend::NeonI8mm, Backend::NeonDotProd] {
+            if backend.is_supported() {
+                assert!(Backend::Neon.is_supported());
+            }
+        }
+        if Backend::SveI8mm.is_supported() {
+            assert!(Backend::NeonI8mm.is_supported());
         }
     }
 

@@ -15,8 +15,12 @@ pub(crate) mod scalar;
 #[path = "x86_64.rs"]
 mod arch;
 
+#[cfg(target_arch = "aarch64")]
+#[path = "aarch64.rs"]
+mod arch;
+
 /// The target has no kernel of its own.
-#[cfg(not(target_arch = "x86_64"))]
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
 mod arch {
     use super::{Matrix, scalar};
     use crate::Backend;
@@ -79,7 +83,7 @@ impl Matrix {
 
     /// Returns the sum of the weights of each row.
     #[cfg_attr(
-        not(any(test, target_arch = "x86_64")),
+        not(any(test, target_arch = "x86_64", target_arch = "aarch64")),
         expect(dead_code, reason = "used by kernels that bias the activations")
     )]
     pub(crate) fn row_sums(&self) -> &[i32] {
