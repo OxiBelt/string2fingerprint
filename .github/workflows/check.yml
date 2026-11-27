@@ -99,3 +99,9 @@ jobs:
 
       - name: Run tests
         run: cargo test --all-features --locked
+
+      - name: Report the kernel backends that the tests executed
+        run: cargo test --all-features --locked --lib backends_are_reported -- --nocapture
+
+      - name: Run the benchmark as a smoke test
+        run: cargo test --all-features --locked --bench score

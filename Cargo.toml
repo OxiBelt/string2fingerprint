@@ -11,3 +11,7 @@ publish = false
 [lints.rust]
 unsafe_code = "deny"
 unsafe_op_in_unsafe_fn = "deny"
+
+[[bench]]
+name = "score"
+harness = false

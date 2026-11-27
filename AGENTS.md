@@ -20,6 +20,7 @@ backend rules. Change that document together with the behavior it describes.
 - `tools/train/` contains the corpus generator and the training tools.
 - `docs/` contains the design document.
 - `tests/` contains Cargo integration tests, with their data in `tests/data/`.
+- `benches/` contains the dependency-free throughput benchmark.
 - `tests/scripts/` contains the Markdown checker and its tests.
 - `.github/workflows/` contains the CI workflows.
 - `README.md` gives the project status and contributor entry points.
