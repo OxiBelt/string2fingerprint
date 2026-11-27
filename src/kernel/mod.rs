@@ -19,8 +19,16 @@ mod arch;
 #[path = "aarch64.rs"]
 mod arch;
 
+#[cfg(target_arch = "riscv64")]
+#[path = "riscv64.rs"]
+mod arch;
+
 /// The target has no kernel of its own.
-#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+#[cfg(not(any(
+    target_arch = "x86_64",
+    target_arch = "aarch64",
+    target_arch = "riscv64"
+)))]
 mod arch {
     use super::{Matrix, scalar};
     use crate::Backend;

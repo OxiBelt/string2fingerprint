@@ -147,7 +147,7 @@ of preference, using the first whose CPU features are all present:
 | --- | --- |
 | x86-64 | AVX-512 VNNI, AVX-VNNI, AVX2, scalar |
 | AArch64 | SVE with I8MM, NEON with I8MM, NEON with DotProd, NEON, scalar |
-| RISC-V 64 | Zvdot4a8i, RVV 1.0, scalar |
+| RISC-V 64 | Zvdot4a8i (reserved), RVV 1.0, scalar |
 
 Rules that apply to every backend:
 
@@ -159,6 +159,12 @@ Rules that apply to every backend:
 - A backend that the operating system cannot report yet is never selected
   automatically. It is available only through an explicit `unsafe` opt-in in
   which the caller vouches for the CPU.
+- Zvdot4a8i is reserved. The extension is not ratified, Linux has no
+  interface that reports it, and a kernel for it ships only once it can be
+  validated on an emulator or on hardware. Until then the backend is never
+  supported, and requesting it without detection runs the scalar kernel.
+- On RISC-V, vector use is detected from the `V` bit of `AT_HWCAP`, which
+  Linux clears when vector use is disabled for the process.
 - The scalar backend is safe Rust and is the reference for every other
   backend. Tests compare each available backend with it.
 
