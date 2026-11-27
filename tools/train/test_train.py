@@ -69,6 +69,26 @@ class QuantizationTest(unittest.TestCase):
             checksum = ((checksum ^ byte) * 0x01000193) & 0xFFFFFFFF
         self.assertEqual(struct.unpack_from("<I", encoded, size)[0], checksum)
 
+    def test_benign_weight_lowers_scores_of_benign_samples(self) -> None:
+        rng = np.random.default_rng(7)
+        features = np.where(
+            rng.random((768, train.FINGERPRINT_LEN)) < 0.03,
+            rng.integers(0, 256, (768, train.FINGERPRINT_LEN)),
+            0,
+        ).astype(np.uint8)
+        labels = np.zeros((768, len(train.CATEGORIES)), dtype=np.float32)
+        # Half of the samples carry a label that depends weakly on the input.
+        labels[: 384, 2] = (features[: 384, :64].sum(axis=1) > np.median(features[: 384, :64].sum(axis=1))).astype(np.float32)
+        labels[: 384, 2] = np.maximum(labels[: 384, 2], rng.random(384) < 0.5)
+        benign = labels.sum(axis=1) == 0
+        means = []
+        for weight in (1.0, 8.0):
+            model = train.train(np.random.default_rng(1), features, labels, [train.FINGERPRINT_LEN, 8, len(train.CATEGORIES)],
+                                epochs=3, quantized_epochs=1, batch_size=64, learning_rate=2e-3, weight_decay=0.0,
+                                input_dropout=0.0, log=lambda _: None, benign_weight=weight)
+            means.append(float(train.infer(train.quantize(model), features[benign])[:, 2].mean()))
+        self.assertLess(means[1], means[0])
+
     def test_auc_counts_ties_as_half(self) -> None:
         scores = np.array([0, 0, 1, 1])
         self.assertEqual(train.auc(scores, np.array([0, 1, 0, 1])), 0.5)

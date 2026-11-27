@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Train, quantize, and export the default `string2fingerprint` model.
+"""Train, quantize, and export a `string2fingerprint` model.
 
 The network and its integer arithmetic are specified in `docs/design.md` and
 implemented in `src/model.rs`. This script trains a float network on
@@ -106,12 +106,16 @@ def train(
     weight_decay: float,
     input_dropout: float,
     log,
+    benign_weight: float = 1.0,
 ) -> FloatModel:
     """Train with Adam on binary cross-entropy, one sigmoid per category.
 
     During the last `quantized_epochs` epochs the forward pass uses weights
     rounded to their 8-bit levels and activations rounded to 1/255, with
     straight-through gradients, so the network adapts to quantization.
+
+    `benign_weight` scales the loss of samples without any label. A value
+    above 1 trades recall for fewer false positives on benign text.
     """
     model = init_model(rng, dimensions)
     parameters = model.weights + model.biases
@@ -155,6 +159,9 @@ def train(
             )
 
             gradient = (probabilities - targets) / len(rows)
+            if benign_weight != 1.0:
+                weights = np.where(targets.sum(axis=1, keepdims=True) == 0, benign_weight, 1.0).astype(np.float32)
+                gradient = gradient * weights
             weight_gradients = [None] * len(model.weights)
             bias_gradients = [None] * len(model.weights)
             for index in range(len(model.weights) - 1, -1, -1):
@@ -341,7 +348,9 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--learning-rate", type=float, default=2e-3)
     parser.add_argument("--weight-decay", type=float, default=1e-4)
     parser.add_argument("--input-dropout", type=float, default=0.1)
+    parser.add_argument("--benign-weight", type=float, default=1.0, help="loss weight of benign samples")
     parser.add_argument("--golden", type=int, default=64, help="number of golden vectors")
+    parser.add_argument("--name", default="default", help="base name of the output files")
     parser.add_argument("--seed", type=int, default=1)
     arguments = parser.parse_args(argv)
 
@@ -367,6 +376,7 @@ def main(argv: list[str]) -> int:
         arguments.weight_decay,
         arguments.input_dropout,
         log,
+        arguments.benign_weight,
     )
 
     layers = quantize(model)
@@ -391,14 +401,14 @@ def main(argv: list[str]) -> int:
 
     arguments.out.mkdir(parents=True, exist_ok=True)
     encoded = encode(layers)
-    (arguments.out / "default.s2fp").write_bytes(encoded)
+    (arguments.out / f"{arguments.name}.s2fp").write_bytes(encoded)
     golden_rows = rng.choice(len(test_features), size=arguments.golden, replace=False)
     golden = bytearray()
     for row in sorted(golden_rows):
         golden += test_features[row].tobytes()
         golden += infer(layers, test_features[row : row + 1])[0].tobytes()
-    (arguments.out / "golden.bin").write_bytes(golden)
-    (arguments.out / "metrics.json").write_text(json.dumps(report, indent=2) + "\n")
+    (arguments.out / f"{arguments.name}.golden").write_bytes(golden)
+    (arguments.out / f"{arguments.name}.json").write_text(json.dumps(report, indent=2) + "\n")
     log(f"wrote {len(encoded)} model bytes, {arguments.golden} golden vectors")
     print(json.dumps(report["test"], indent=2))
     return 0
