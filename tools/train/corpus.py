@@ -41,6 +41,7 @@ from typing import Iterable, Iterator, List, NamedTuple, Tuple
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import attacks  # noqa: E402  (attack grammars)
+import formats  # noqa: E402  (more benign formats and hard negatives)
 import obfuscation  # noqa: E402  (obfuscating encodings)
 import benign  # noqa: E402  (benign text, shared pools, corruption)
 
@@ -424,11 +425,11 @@ def embed_many(rng: random.Random, values: List[bytes], mask: int, is_benign: bo
     can_text = all(valid_utf8(v) and not has_low_control(v) for v in values)
     can_encode = allow_encode and not malformed and not any(_has_valid_escape(v) for v in values)
 
-    carriers = ["bare", "query", "query", "form", "cookie", "header", "header", "path", "prose", "prose"]
+    carriers = ["bare", "query", "query", "form", "cookie", "header", "header", "path", "prose", "prose", "csv"]
     if can_text and not (mask & M_HEADER):
-        carriers += ["json", "json"]
+        carriers += ["json", "json", "xml", "graphql", "yaml", "html_attr"]
     carrier = rng.choice(carriers)
-    hkind = rng.choice(("ua", "referer", "xff", "cookie")) if carrier == "header" else ""
+    hkind = rng.choice(("ua", "referer", "xff", "cookie", "auth", "disposition", "other")) if carrier == "header" else ""
     urlish = carrier in _URLISH or hkind == "referer"
     plus = rng.random() < 0.5 and carrier != "path"
     if urlish and can_encode:
@@ -510,6 +511,91 @@ def embed_many(rng: random.Random, values: List[bytes], mask: int, is_benign: bo
             outs.append(b"/" + b"/".join(parts) + tail)
         return outs, name
 
+    if hkind == "auth":
+        scheme = rng.choice(("Bearer ", "Basic ", "Token ", "Digest username=\"", ""))
+        for v in values:
+            outs.append(scheme.encode() + v + (b'"' if scheme.startswith("Digest") else b""))
+        return outs, name
+
+    if hkind == "disposition":
+        kind = rng.choice((b"attachment", b"inline", b"form-data; name=\"" + rng.choice(PARAM_NAMES).encode() + b"\""))
+        quote = rng.random() < 0.7
+        for v in values:
+            outs.append(kind + b"; filename=" + (b'"' + v + b'"' if quote else v))
+        return outs, name
+
+    if hkind == "other":
+        # a value in a custom or less common header
+        tail = rng.choice((b"", b"; q=0.9", b", " + benign.rand_hex(rng, 8).encode()))
+        for v in values:
+            outs.append(v + tail)
+        return outs, name
+
+    if carrier == "csv":
+        cells = [benign.csv_row(rng, ",").split(",")[0] for _ in range(rng.randint(1, 4))]
+        at = rng.randint(0, len(cells))
+        quote = rng.random() < 0.5
+        for v in values:
+            row = [c.encode() for c in cells]
+            row.insert(at, b'"' + v.replace(b'"', b'""') + b'"' if quote else v)
+            outs.append(b",".join(row))
+        return outs, name
+
+    if carrier == "xml":
+        root = benign.ident(rng).encode()
+        tag = rng.choice(PARAM_NAMES).encode()
+        others = b"".join(b"<" + k.encode() + b">" + str(rng.randint(0, 999)).encode() + b"</" + k.encode() + b">"
+                          for k in (rng.choice(benign.JSON_KEYS) for _ in range(rng.randint(0, 2))))
+        attr = rng.random() < 0.3
+        decl = rng.choice((b"", b"", b'<?xml version="1.0" encoding="UTF-8"?>'))
+        for v in values:
+            if is_benign:
+                v = v.replace(b"&", b"&amp;").replace(b"<", b"&lt;").replace(b">", b"&gt;")
+            if attr:
+                vv = v.replace(b'"', b"&quot;") if is_benign else v
+                outs.append(decl + b"<" + root + b" " + tag + b'="' + vv + b'">' + others + b"</" + root + b">")
+            else:
+                outs.append(decl + b"<" + root + b">" + others + b"<" + tag + b">" + v + b"</" + tag + b"></" + root + b">")
+        return outs, name
+
+    if carrier == "graphql":
+        field = benign.ident(rng)
+        arg = rng.choice(PARAM_NAMES)
+        sel = " ".join(rng.choice(benign.JSON_KEYS) for _ in range(rng.randint(1, 3)))
+        wrap_json = rng.random() < 0.5
+        for v in values:
+            text = v.decode("utf-8")
+            literal = json.dumps(text, ensure_ascii=False)
+            query = f"{{ {field}({arg}: {literal}) {{ {sel} }} }}"
+            outs.append(json.dumps({"query": query}, ensure_ascii=False).encode("utf-8") if wrap_json else query.encode("utf-8"))
+        return outs, name
+
+    if carrier == "yaml":
+        key = rng.choice(benign.JSON_KEYS)
+        others = [f"{rng.choice(benign.JSON_KEYS)}: {rng.choice((str(rng.randint(0, 999)), 'true', benign.ident(rng)))}"
+                  for _ in range(rng.randint(0, 2))]
+        quote = rng.choice(("", "'", '"'))
+        for v in values:
+            text = v.decode("utf-8")
+            if quote == "'":
+                text = text.replace("'", "''")
+            elif quote == '"':
+                text = text.replace("\\", "\\\\").replace('"', '\\"')
+            lines = list(others) + [f"{key}: {quote}{text}{quote}"]
+            outs.append("\n".join(lines).encode("utf-8"))
+        return outs, name
+
+    if carrier == "html_attr":
+        tag = rng.choice(("div", "span", "a", "li", "p", "td"))
+        attr = rng.choice(("title", "data-" + benign.ident(rng), "class", "alt", "aria-label", "data-value"))
+        q = rng.choice(('"', '"', "'"))
+        text = benign.english_sentence(rng)[: rng.randint(4, 40)].replace("<", "").replace(">", "").replace("&", "and")
+        for v in values:
+            if is_benign:
+                v = v.replace(b"&", b"&amp;").replace(b"<", b"&lt;").replace(b">", b"&gt;").replace(q.encode(), b"&quot;" if q == '"' else b"&#39;")
+            outs.append(f"<{tag} {attr}={q}".encode() + v + f"{q}>{text}</{tag}>".encode())
+        return outs, name
+
     if carrier == "prose":
         text = benign.english_sentence(rng) if rng.random() < 0.75 else benign.script_text(rng)
         words = text.split(" ")
@@ -552,6 +638,8 @@ def embed_many(rng: random.Random, values: List[bytes], mask: int, is_benign: bo
 # --------------------------------------------------------------------------
 
 def _hard_negative(rng: random.Random) -> bytes:
+    if rng.random() < 0.7:
+        return formats.hard_negative(rng).encode("utf-8")
     g = rng.randint(0, 15)
     if g == 0:  # prose with SQL words
         return rng.choice((

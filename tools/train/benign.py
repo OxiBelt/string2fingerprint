@@ -1764,15 +1764,25 @@ FAMILIES: List[Tuple[str, Callable[[random.Random], str], int]] = [
     ("email", email, 1),
     ("emoji", lambda r: " ".join(emoji(r) for _ in range(r.randint(1, 4))) + (" " + english_sentence(r) if r.random() < 0.5 else ""), 1),
 ]
-_FAM_NAMES = [f[0] for f in FAMILIES]
-_FAM_FUNCS = [f[1] for f in FAMILIES]
-_FAM_WEIGHTS = [f[2] for f in FAMILIES]
+
+
+_ALL_FAMILIES: List[Tuple[str, Callable[[random.Random], str], int]] = []
+
+
+def all_families() -> List[Tuple[str, Callable[[random.Random], str], int]]:
+    """The families above and those of `formats.py`, which imports this module."""
+    if not _ALL_FAMILIES:
+        import formats  # noqa: PLC0415  (imported late: `formats` imports this module)
+
+        _ALL_FAMILIES.extend(FAMILIES + formats.FAMILIES)
+    return _ALL_FAMILIES
 
 
 def sample(rng: random.Random) -> Tuple[bytes, str]:
     """One standalone benign sample: (bytes, family name). Not yet checked."""
-    i = rng.choices(range(len(FAMILIES)), _FAM_WEIGHTS)[0]
-    return _FAM_FUNCS[i](rng).encode("utf-8"), _FAM_NAMES[i]
+    families = all_families()
+    name, fn, _ = rng.choices(families, [f[2] for f in families])[0]
+    return fn(rng).encode("utf-8"), name
 
 
 def corruption_base(rng: random.Random) -> bytes:
@@ -1946,7 +1956,7 @@ def corrupt(rng: random.Random, clean: bytes, kind: Optional[str] = None) -> byt
 # ==========================================================================
 
 _FORBIDDEN = re.compile(
-    r"\.\.[/\\]|%2e%2e|\{\{|\$\{|#\{|<%|\{%|<\s*/?\s*(script|iframe|svg|img|object|embed|body|math|meta|link|style|base)\b"
+    r"\.\.[/\\]|%2e%2e|\{\{|\$\{|#\{|<%|\{%|<\s*/?\s*(script|iframe|svg|object|embed|body|math|meta|link|style|base)\b"
     r"|javascript\s*:|vbscript\s*:|data\s*:\s*text/html|\bon[a-z]{3,15}\s*=|<!\s*(doctype|entity)|<\?xml"
     r"|/etc/(passwd|shadow|hosts|group)|win\.ini|boot\.ini|system32|file://|/proc/self|%00"
     r"|%25[0-9a-f]{2}|%u[0-9a-f]{4}|(&#x?[0-9a-f]+;){3}|(\\x[0-9a-f]{2}){3}|\\u00[0-7][0-9a-f]|(\\[0-7]{3}){3}"
@@ -1978,7 +1988,7 @@ _FORBIDDEN_EXTRA = re.compile(
     # markup: event handlers after any separator, sinks, and the less common tags
     r"|(?<![a-z])on[a-z]{3,20}\s*=|alert\s*[(`]|eval\s*\(|atob\(|\[['`]al['`]|prompt\s*\(|confirm\s*\(|document\.(cookie|domain|write|location)"
     r"|<\s*/?\s*(marquee|form|applet|xmp|noscript|template|isindex|frameset|keygen|details|video|audio|input|textarea"
-    r"|button|select|source|track|table|xss|animate|set|maction|iframe|frame)\b|expression\s*\(|xi:include"
+    r"|button|select|xss|animate|set|maction|iframe|frame)\b|<\s*img\b(?![^>]*\balt=)|expression\s*\(|xi:include"
     r"|formaction|codebase\s*=|srcdoc\s*=|http-equiv|<!\[cdata\[|\]\]>|-->|</(title|textarea|noscript|option)>"
     # path traversal: encoded separators, overlong and wide escapes, stream wrappers, sensitive files
     r"|\.\.(%2f|%5c|;/|\\/|%252f|%255c|%c0|%c1|%e0|%u2215|%u2216|%%)|%c0%a[ef]|%c0%2e|%c[01]%[89ab][0-9a-f]|%e0%80%[89ab][0-9a-f]|%uff0e|\uff0e\uff0e"
@@ -2014,6 +2024,17 @@ _FULLWIDTH_BAD = re.compile("[\uff02-\uff07\uff0a\uff0b\uff0d-\uff19\uff1c-\uff1
 _MIXED_SCRIPT = re.compile("[A-Za-z][\u0400-\u04ff\u0370-\u03ff]|[\u0400-\u04ff\u0370-\u03ff][A-Za-z]")
 
 
+# An ordinary relative reference that climbs one or two levels to a module or
+# asset, such as `../lib/util` or `../../images/a.png`. `benign_ok()` removes
+# these before it applies `_FORBIDDEN`, which rejects every other `../`.
+_RELATIVE_OK = re.compile(
+    r"(?<![\w.%/\\])(\.\./){1,2}(?!(\.\.|etc|proc|root|home|var|usr|boot|windows|winnt|system|sys|dev|tmp|opt"
+    r"|\.ssh|\.env|\.git|\.aws|web-inf|meta-inf|config|secrets?|passwd|shadow|private|inetpub|programdata|xampp"
+    r"|storage/logs|users/administrator|app/config|appsettings|application\.properties|\.ht(access|passwd))\b)(?=[a-z_][\w-]*([/.'\")]|$))",
+    re.IGNORECASE,
+)
+
+
 @functools.lru_cache(maxsize=1)
 def _sensitive_reference() -> re.Pattern:
     """A reference to a file that the attack grammars treat as a traversal target.
@@ -2040,6 +2061,7 @@ def benign_ok(b: bytes) -> bool:
         return False
     if _sensitive_reference().search(s.replace("\\", "/")):
         return False
+    s = _RELATIVE_OK.sub("", s)
     if _FORBIDDEN.search(s) or _FORBIDDEN_EXTRA.search(s) or _FULLWIDTH_BAD.search(s) or _MIXED_SCRIPT.search(s):
         return False
     return True
