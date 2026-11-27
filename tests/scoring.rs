@@ -82,6 +82,15 @@ fn scoring_accepts_any_bytes_and_is_deterministic() {
 }
 
 #[test]
+fn every_supported_backend_passes_the_kernel_self_test() {
+    for &backend in Backend::PREFERENCE {
+        if let Ok(scorer) = Scorer::new().with_backend(backend) {
+            assert!(scorer.kernel_self_test(), "backend {backend}");
+        }
+    }
+}
+
+#[test]
 fn every_supported_backend_returns_the_same_scores() {
     let reference = Scorer::new().with_backend(Backend::Scalar).unwrap();
     let inputs = stress_inputs();

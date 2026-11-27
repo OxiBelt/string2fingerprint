@@ -2,6 +2,7 @@
 
 use crate::backend::{UnsupportedBackend, Verified};
 use crate::fingerprint::{Fingerprint, fingerprints};
+use crate::kernel::selftest;
 use crate::model::Model;
 use crate::{Backend, Scores};
 
@@ -90,6 +91,27 @@ impl Scorer {
     #[must_use]
     pub fn backend(&self) -> Backend {
         self.backend.get()
+    }
+
+    /// Checks the kernel of the backend in use against the scalar kernel.
+    ///
+    /// Both kernels compute the sums of built-in matrices: random values at
+    /// many widths, the extreme weights and activations, and sums that wrap.
+    /// The result is whether every sum is equal. The check does not use the
+    /// model. It allocates, and it takes a few milliseconds in an optimized
+    /// build.
+    ///
+    /// A backend that detection selected passes, and its kernel is covered
+    /// by the tests of this crate. The check is meant to follow
+    /// [`Scorer::with_backend_unchecked`], where a CPU that implements
+    /// another revision of an extension could otherwise return wrong scores
+    /// silently. It does not make that call sound: a CPU without the
+    /// features of the backend can fault or misbehave before the check
+    /// returns. It also cannot show that every 32-bit lane of a vector
+    /// kernel wraps instead of saturating, which no valid model depends on.
+    #[must_use]
+    pub fn kernel_self_test(&self) -> bool {
+        selftest::run(self.backend)
     }
 
     /// Returns the model in use.

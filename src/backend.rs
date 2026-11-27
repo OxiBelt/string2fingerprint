@@ -27,9 +27,25 @@ pub enum Backend {
     NeonDotProd,
     /// AArch64 with NEON: 16 bytes per `SMULL`, `SMLAL2`, and `SADALP`.
     Neon,
-    /// RISC-V 64 with RVV 1.0 and Zvdot4a8i. Reserved: the extension is not
-    /// ratified, Linux cannot report it, and this crate has no kernel for it
-    /// yet. It is never supported, and selecting it runs the scalar kernel.
+    /// RISC-V 64 with RVV 1.0 and Zvdot4a8i: `VLEN` bytes per `vdot4asu.vv`.
+    ///
+    /// Experimental. The extension is not ratified and Linux cannot report
+    /// it, so this backend is never detected. It runs only through
+    /// [`Scorer::with_backend_unchecked`](crate::Scorer::with_backend_unchecked).
+    ///
+    /// The CPU features of this backend are the `V` extension version 1.0
+    /// and the Zvdot4a8i draft as the Spike simulator implemented it under
+    /// the name `zvdot4a` at revision `6e18887` of November 2026. In that
+    /// draft `vdot4asu.vv vd, vs2, vs1` has the `OP-V` opcode with `funct3`
+    /// `0b010` and `funct6` `0b101010`. It is legal without a mask for
+    /// 32-bit elements and a register group of eight. For each element it
+    /// multiplies each of the four signed bytes of `vs2` by the unsigned
+    /// byte of `vs1` at the same position and adds the four products to the
+    /// element of `vd`, modulo 2<sup>32</sup>. A CPU that implements another
+    /// revision does not have these features. The kernel was executed on
+    /// that simulator only. Run
+    /// [`Scorer::kernel_self_test`](crate::Scorer::kernel_self_test) after
+    /// selecting this backend.
     RvvZvdot4a8i,
     /// RISC-V 64 with RVV 1.0: `VLEN / 4` bytes per `vwmulsu.vv` and
     /// `vwadd.wv` pair.
@@ -262,7 +278,7 @@ mod tests {
     }
 
     #[test]
-    fn reserved_backends_are_never_supported() {
+    fn backends_that_linux_cannot_report_are_never_detected() {
         assert!(!Backend::RvvZvdot4a8i.is_supported());
     }
 

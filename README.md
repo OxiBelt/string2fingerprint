@@ -13,7 +13,7 @@ present, in this order:
 | --- | --- |
 | x86-64 | AVX-512 VNNI, AVX-VNNI, AVX2, scalar |
 | AArch64 | SVE with I8MM, NEON with I8MM, NEON with DotProd, NEON, scalar |
-| RISC-V 64 | Zvdot4a8i (reserved, see the design document), RVV 1.0, scalar |
+| RISC-V 64 | Zvdot4a8i (experimental and never detected, see the design document), RVV 1.0, scalar |
 
 ## Usage
 
