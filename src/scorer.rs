@@ -61,6 +61,26 @@ impl Scorer {
         Ok(self)
     }
 
+    /// Selects a specific backend without detecting its CPU features.
+    ///
+    /// This exists for backends that the operating system cannot report yet,
+    /// so that [`Backend::is_supported`] is false for them on every CPU.
+    /// Prefer [`Scorer::with_backend`] for every other backend.
+    ///
+    /// # Safety
+    ///
+    /// The running CPU must implement every CPU feature that the
+    /// documentation of `backend` lists, and the operating system must have
+    /// enabled them for this process. Otherwise scoring executes instructions
+    /// that the CPU does not have, which is undefined behavior.
+    #[must_use]
+    #[expect(unsafe_code, reason = "the caller vouches for CPU features")]
+    pub unsafe fn with_backend_unchecked(mut self, backend: Backend) -> Self {
+        // SAFETY: the caller guarantees the CPU features of `backend`.
+        self.backend = unsafe { Verified::new_unchecked(backend) };
+        self
+    }
+
     /// Returns the backend in use.
     #[must_use]
     pub fn backend(&self) -> Backend {
@@ -116,6 +136,18 @@ mod tests {
         assert_eq!(scorer.model().layer_sizes().len(), 3);
         let scalar = scorer.with_backend(Backend::Scalar).unwrap();
         assert_eq!(scalar.backend(), Backend::Scalar);
+    }
+
+    #[test]
+    #[expect(unsafe_code, reason = "exercises the unchecked constructor")]
+    fn unchecked_backend_matches_checked_backend() {
+        let checked = scorer(9);
+        let backend = checked.backend();
+        // SAFETY: `backend` was detected on this CPU.
+        let unchecked = unsafe { checked.clone().with_backend_unchecked(backend) };
+        assert_eq!(unchecked.backend(), backend);
+        let input = b"GET /a/../../etc/passwd?q=%27%20OR%201=1 HTTP/1.1";
+        assert_eq!(unchecked.score(input), checked.score(input));
     }
 
     #[test]
