@@ -19,11 +19,17 @@
 #[cfg(not(target_os = "linux"))]
 compile_error!("`string2fingerprint` supports Linux targets only");
 
+mod backend;
 mod category;
 pub mod fingerprint;
+mod kernel;
+pub mod model;
+mod scorer;
 mod scores;
 #[cfg(test)]
 mod testutil;
 
+pub use backend::{Backend, UnsupportedBackend};
 pub use category::Category;
+pub use scorer::Scorer;
 pub use scores::Scores;
