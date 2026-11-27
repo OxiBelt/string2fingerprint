@@ -22,8 +22,8 @@ systems are rejected at compile time.
 
 | Index | Category | Describes |
 | --- | --- | --- |
-| 0 | `malformed` | Invalid UTF-8, NUL or other control bytes, invalid percent-escapes, binary data. |
-| 1 | `obfuscation` | Repeated percent-encoding, `%u` escapes, overlong UTF-8, escape runs that spell ASCII, keyword splitting. |
+| 0 | `malformed` | Invalid UTF-8, including text in a legacy or UTF-16 encoding, NUL or other control bytes, invalid percent-escapes, binary data. |
+| 1 | `obfuscation` | Repeated percent-encoding, `%u` escapes, overlong UTF-8, escape runs or character references that spell ASCII, UTF-7, look-alike, invisible, or decorated characters, keyword splitting. |
 | 2 | `sql_injection` | Escapes from an SQL string or numeric context. |
 | 3 | `markup_injection` | Escapes into HTML or XML markup, including cross-site scripting. |
 | 4 | `path_traversal` | Escapes from a directory, including encoded `../` sequences. |

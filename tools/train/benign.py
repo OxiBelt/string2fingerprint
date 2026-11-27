@@ -1826,7 +1826,9 @@ def _insert(rng: random.Random, b: bytes, junk: bytes) -> bytes:
     return b[:pos] + junk + b[pos:]
 
 
-CORRUPTIONS = ("truncate_mb", "stray_cont", "bad_lead", "bad_second", "nul", "c0", "bad_pct", "binary")
+CORRUPTIONS = ("truncate_mb", "stray_cont", "bad_lead", "bad_second", "nul", "c0", "bad_pct", "binary",
+               "legacy_char", "truncate_end", "ansi", "bad_pct_end", "utf16_frag")
+_LEGACY = ("cp1252", "latin-1", "cp1251", "iso8859_7", "euc_kr", "shift_jis", "gbk", "cp1256", "cp1255", "tis_620")
 
 
 def _apply(rng: random.Random, clean: bytes, kind: str) -> Optional[bytes]:
@@ -1883,6 +1885,41 @@ def _apply(rng: random.Random, clean: bytes, kind: str) -> Optional[bytes]:
         else:
             out = clean[:j + 1] + clean[j + 3:]          # bare %
         return out if invalid_pct_at(out, j) else None
+    if kind == "legacy_char":
+        # one character re-encoded in a legacy code page, as a mixed-encoding join does
+        text = clean.decode("utf-8")
+        idx = [i for i, ch in enumerate(text) if ord(ch) > 0x7F]
+        rng.shuffle(idx)
+        for i in idx[:8]:
+            for codec in rng.sample(_LEGACY, len(_LEGACY)):
+                try:
+                    legacy = text[i].encode(codec)
+                except UnicodeEncodeError:
+                    continue
+                out = text[:i].encode("utf-8") + legacy + text[i + 1:].encode("utf-8")
+                if not _valid_utf8(out):
+                    return out
+        return None
+    if kind == "truncate_end":
+        # the field was cut in the middle of its last multi-byte character
+        leads = [i for i, c in enumerate(clean) if c >= 0xC2]
+        if not leads:
+            return None
+        i = leads[-1]
+        c = clean[i]
+        ln = 2 if c < 0xE0 else 3 if c < 0xF0 else 4
+        if len(clean) - (i + ln) > 2:
+            return None
+        return clean[:i + rng.randint(1, ln - 1)]
+    if kind == "ansi":
+        seq = rng.choice((b"\x1b[31m", b"\x1b[0m", b"\x1b[1;33m", b"\x1b[2K", b"\x1b[H", b"\x1b[?25h", b"\x1b]0;x\x07"))
+        return _insert(rng, clean, seq)
+    if kind == "bad_pct_end":
+        # a percent-escape cut at the end of the field
+        return clean + rng.choice((b"%", b"%2", b"%E", b"%C", b"%e2%8"))
+    if kind == "utf16_frag":
+        word = rng.choice(("id", "ok", "name", "x", "file", "data"))
+        return _insert(rng, clean, word.encode(rng.choice(("utf-16-le", "utf-16-be"))))
     # binary splice
     run = bytes(rng.randint(0, 255) for _ in range(rng.randint(3, 16)))
     return _insert(rng, clean, run)
@@ -1895,7 +1932,8 @@ def corrupt(rng: random.Random, clean: bytes, kind: Optional[str] = None) -> byt
     for attempt in range(20):
         k = kind if (kind is not None and attempt < 5) else None
         if k is None:
-            weights = [3 if has_mb else 0, 2, 2, 2, 2, 2, 7 if has_pct else 0, 1]
+            weights = [3 if has_mb else 0, 2, 2, 2, 2, 2, 7 if has_pct else 0, 1,
+                       2 if has_mb else 0, 1 if has_mb else 0, 1, 1, 1]
             k = rng.choices(CORRUPTIONS, weights)[0]
         out = _apply(rng, clean, k)
         if out is not None and out != clean and is_malformed(out):
@@ -1943,7 +1981,7 @@ _FORBIDDEN_EXTRA = re.compile(
     r"|button|select|source|track|table|xss|animate|set|maction|iframe|frame)\b|expression\s*\(|xi:include"
     r"|formaction|codebase\s*=|srcdoc\s*=|http-equiv|<!\[cdata\[|\]\]>|-->|</(title|textarea|noscript|option)>"
     # path traversal: encoded separators, overlong and wide escapes, stream wrappers, sensitive files
-    r"|\.\.(%2f|%5c|;/|\\/|%252f|%255c|%c0|%c1|%e0|%u2215|%u2216|%%)|%c0%a[ef]|%c0%2e|%uff0e|\uff0e\uff0e"
+    r"|\.\.(%2f|%5c|;/|\\/|%252f|%255c|%c0|%c1|%e0|%u2215|%u2216|%%)|%c0%a[ef]|%c0%2e|%c[01]%[89ab][0-9a-f]|%e0%80%[89ab][0-9a-f]|%uff0e|\uff0e\uff0e"
     r"|(php|phar|zip|compress\.zlib|expect|netdoc)://|jar:(file|https?):|\\\\\?\\|[\\/](c|d|admin|ipc)\$|%2e"
     r"|/etc/(sudoers|crontab|issue|hostname|fstab|resolv\.conf|ssh/|mysql/|nginx/|apache2/|httpd/|php\.ini)|/proc/"
     r"|(^|[\s=:'\x22])/root/\.|\.ssh/(id_|authorized)|\.aws/credentials|serviceaccount|web\.config|wp-config|\.htpasswd|\.git/(config|head)"
@@ -1964,7 +2002,12 @@ _FORBIDDEN_EXTRA = re.compile(
     r"|(\r|\n|%0d|%0a|\\r|\\n|%c4%8a|%e5%98%8a|%e5%98%8d|%u000a)(%20|%09|\s)*(set-cookie|location|content-[a-z-]+|transfer-encoding"
     r"|x-[a-z-]+|host|refresh|access-control-[a-z-]+|cache-control|link|authorization|connection|upgrade|cookie|reply-to"
     r"|mime-version|bcc|cc|to|from|subject|vary|info|warn|error)\s*:"
-    r"|(\r|\n|%0d|%0a)(%20|\s)*\d+\.\d+\.\d+\.\d+ - - \[|(%0d|%0a|\r|\n)(%20|\s)*info user|http/1\.[01] \d{3}",
+    r"|(\r|\n|%0d|%0a)(%20|\s)*\d+\.\d+\.\d+\.\d+ - - \[|(%0d|%0a|\r|\n)(%20|\s)*info user|http/1\.[01] \d{3}"
+    # obfuscating encodings from `obfuscation.py`
+    r"|(\\[0-9a-f]{2,6}\s?){3}|\\u\{[0-9a-f]+\}|\+A[CDEFG][0-9A-Za-z+/]{0,6}-|/\*!"
+    r"|[a-z][\u200b-\u200d\u2060\ufeff\u00ad\u034f\u180e][a-z]|[\U0001d400-\U0001d7ff\ufe50-\ufe6b]"
+    r"|[\u2039\u203a\u2032\u2033\u2044\u2215\u2216\u29f8\u276e\u276f\u02c2\u02c3\u02bc\u02ba\u037e\u2024]"
+    r"|[a-z][\u0300-\u036f]|(&#x?[0-9a-f]+){3}|['\"`]\s*\+\s*['\"`][a-z]",
     re.IGNORECASE,
 )
 _FULLWIDTH_BAD = re.compile("[\uff02-\uff07\uff0a\uff0b\uff0d-\uff19\uff1c-\uff1e\uff20-\uff5d]")

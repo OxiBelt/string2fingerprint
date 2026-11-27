@@ -8,10 +8,11 @@ use it.
 | --- | --- |
 | `corpus.py` | Generates labeled synthetic samples. Standard library only. |
 | `attacks.py` | Grammars of the six injection categories. |
+| `obfuscation.py` | Obfuscating encodings and chains of them. |
 | `benign.py` | Benign text, the pools shared with attack carriers, and corruption of benign samples. |
 | `dataset.py` | Joins some samples into longer ones and writes a corpus file. |
 | `train.py` | Trains, quantizes, evaluates, and exports a model. Needs NumPy. |
-| `test_corpus.py`, `test_attacks.py`, `test_train.py` | Tests of the tools. |
+| `test_*.py` | Tests of the tools. |
 
 ## Procedure
 
@@ -94,11 +95,26 @@ traffic is used.
   `cat /etc/passwd`. A keyword split into concatenated strings, such as
   `top['al'+'ert']`, is `obfuscation`.
 - Most `malformed` samples are a benign sample with exactly one structural
-  damage, such as a truncated UTF-8 sequence, a NUL byte, or a damaged
-  percent-escape. The clean twin stays in the corpus as a benign sample, so
-  the damage is the only difference the model can learn from.
+  damage, such as a truncated UTF-8 sequence, a character re-encoded in a
+  legacy code page, a field cut inside its last character or percent-escape,
+  a NUL byte, a terminal escape sequence, or a UTF-16 fragment. The clean twin
+  stays in the corpus as a benign sample, so the damage is the only
+  difference the model can learn from. The other `malformed` samples are
+  generated whole: text in 15 legacy encodings, UTF-16 text, file headers of
+  binary formats, surrogates, and invalid escapes.
+- `obfuscation.py` has 20 techniques: double, triple, and partial double
+  percent-encoding, `%u` escapes, overlong UTF-8 raw or percent-escaped,
+  numeric character references, language and CSS escape runs, UTF-7,
+  full-width, look-alike, mathematical, invisible, and combining characters,
+  SQL comment and MySQL versioned-comment splitting, shell quote splitting,
+  and JavaScript string concatenation. A sample applies one technique or
+  chains one with one or two percent-encoding layers.
 - Some `obfuscation` samples are a benign value with layered encoding, paired
   with its plain or single-layer form in the same way.
+- A quarter of the attack samples get a second label: another payload
+  appended before or after, a payload that is an attack in two categories at
+  once (for example a command that reads a traversed file, or response
+  splitting with a script body), an obfuscation, or a damaged byte.
 - Hard negatives are benign samples that share vocabulary with attacks, such
   as prose that mentions SQL keywords.
 - Every benign sample passes a final check in `benign.py` that rejects the

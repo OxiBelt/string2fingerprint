@@ -179,6 +179,18 @@ class TestLabelInvariants(unittest.TestCase):
                 self.assertTrue(ok, "malformed-only not detectable: %r" % payload)
         self.assertGreater(checked, 50)
 
+    def test_invalid_text_carries_the_malformed_bit(self):
+        for payload, mask in self.samples:
+            if not is_valid_utf8(payload) or has_bad_control(payload):
+                self.assertTrue(mask & corpus.M_MALFORMED, "malformed bit missing: %r" % payload)
+
+    def test_overlong_utf8_is_also_obfuscation(self):
+        rng = random.Random(8)
+        for _ in range(2000):
+            payload, mask = corpus.gen_malformed(rng)
+            if payload.startswith((b"\xc0\xae", b"\xc0\xaf", b"\xc0\xbc")):
+                self.assertTrue(mask & corpus.M_OBFUSCATION, payload)
+
     def test_benign_no_control_except_whitespace(self):
         for payload, mask in self.samples:
             if mask == 0:
@@ -326,8 +338,9 @@ class TestRecordsStream(unittest.TestCase):
         pairs = [d for d in by_pid.values() if len(d) == 2]
         self.assertGreater(len(pairs), 200)
         # escape runs may have their backslashes doubled by the JSON carrier
-        layered = re.compile(rb"%25[0-9A-Fa-f]{2}|%u[0-9A-Fa-f]{4}|(&#x?[0-9A-Fa-f]+;){3}"
-                             rb"|(\\{1,2}x[0-9a-f]{2}){3}|(\\{1,2}u[0-9a-f]{4}){3}|(\\{1,2}[0-7]{2,3}){3}")
+        layered = re.compile(rb"%25[0-9A-Fa-f]{2}|%u[0-9A-Fa-f]{4}|(&#[xX]?[0-9A-Fa-f]+;?){3}"
+                             rb"|(\\{1,2}(x[0-9a-fA-F]{2}|u[0-9a-f]{4}|[0-7]{2,3}|u\{[0-9a-f]+\})){3}"
+                             rb"|(\\{1,2}[0-9a-f]{2,6} ?){3}")
         for d in pairs:
             o, p = d["obf_pair"], d["plain_pair"]
             self.assertEqual(o.mask, corpus.M_OBFUSCATION)

