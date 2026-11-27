@@ -1,0 +1,13 @@
+[package]
+name = "string2fingerprint"
+version = "0.1.0-dev"
+edition = "2024"
+rust-version = "1.100.0"
+license = "Apache-2.0"
+description = "A planned SIMD fingerprinting library for detecting malformed strings"
+repository = "https://github.com/OxiBelt/string2fingerprint"
+publish = false
+
+[lints.rust]
+unsafe_code = "deny"
+unsafe_op_in_unsafe_fn = "deny"
