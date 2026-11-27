@@ -1,3 +1,6 @@
 self-hosted-runner:
   labels:
     - ubuntu-24.04-riscv
+    # GitHub-hosted labels absent from actionlint 1.7.12's built-in list.
+    - ubuntu-26.04
+    - ubuntu-26.04-arm

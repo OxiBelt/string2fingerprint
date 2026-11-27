@@ -13,7 +13,7 @@ design decisions.
   pinned Rust toolchain.
 - `src/` contains the library source.
 - `tests/scripts/` contains the Markdown checker and its tests.
-- `scripts/ci/` and `.github/workflows/` contain CI setup and workflows.
+- `.github/workflows/` contains the CI workflows.
 - `README.md` gives the project status and contributor entry points.
 - `SECURITY.md` defines the security scope and private reporting process.
 

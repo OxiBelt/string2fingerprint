@@ -15,7 +15,7 @@ request notes. Run the commands in this guide from the repository root.
 | `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml` | Package metadata, dependency resolution, lints, and toolchain. | The crate, toolchain, lint policy, or dependencies change. |
 | `src/` | The Rust library. | Library code or crate-level documentation changes. |
 | `tests/scripts/` | Markdown checker and regression tests. | Documentation validation changes. |
-| `scripts/ci/`, `.github/workflows/` | CI toolchain setup and workflows. | Runner, toolchain setup, or CI checks change. |
+| `.github/workflows/` | CI workflows. | Runners or CI checks change. |
 | `README.md` | Project status and contributor entry points. | Setup, usage, or the project overview changes. |
 | `SECURITY.md` | Security scope, requirements, and private reporting. | The threat model, reporting process, or scope changes. |
 
@@ -51,8 +51,9 @@ python3 -B tests/scripts/check_markdown_links.py --repo-root .
 ```
 
 The link checker reads Git-tracked Markdown. Include new documents in the Git
-index for a complete check. CI runs native Rust builds and tests on Linux
-x86-64, Arm64, and RISC-V. The RISC-V job requires the repository to have
+index for a complete check. CI uses the runners' preinstalled `rustup` to
+install the pinned toolchain. Native builds and tests use Ubuntu 26.04 on
+x86-64 and Arm64, and `ubuntu-24.04-riscv` on RISC-V. The RISC-V job requires
 access to the [RISE runner service](https://ci.riseproject.dev/docs/getting-started/configure).
 These jobs validate the scaffold on the selected architectures.
 
