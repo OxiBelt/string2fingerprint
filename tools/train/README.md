@@ -158,40 +158,48 @@ traffic is used.
 
 ## Measured Results
 
-The embedded model has layers of 3072, 64, 64, and 8 units and is 202,336
-bytes. It was trained with the procedure above.
+The embedded model has layers of 3072, 64, 64, and 8 units and is
+202,336 bytes. It was trained with the procedure above.
 
-On the synthetic test split, which holds 59,982 samples of which 21,541 are
+On the synthetic test split, which holds 59,991 samples of which 21,446 are
 benign, the quantized model scores as follows. Recall is the share of samples
 of a category that score at or above the threshold in that category. The
 benign rate is the share of benign samples that do.
 
 | Category | Samples | AUC | Recall at 128 | Benign rate at 128 | Recall at 192 | Benign rate at 192 |
 | --- | --- | --- | --- | --- | --- | --- |
-| `malformed` | 13,520 | 0.998 | 97.8% | 0.07% | 97.5% | 0.03% |
-| `obfuscation` | 10,920 | 0.987 | 90.1% | 0.21% | 87.7% | 0.08% |
-| `sql_injection` | 7,912 | 0.996 | 93.9% | 0.05% | 91.8% | 0.02% |
-| `markup_injection` | 7,653 | 0.999 | 96.9% | 0.01% | 95.7% | 0.01% |
-| `path_traversal` | 7,953 | 0.993 | 91.0% | 0.12% | 88.7% | 0.07% |
-| `command_injection` | 8,136 | 0.980 | 79.7% | 0.36% | 72.2% | 0.14% |
-| `template_injection` | 8,017 | 0.997 | 93.0% | 0.07% | 89.9% | 0.03% |
-| `header_injection` | 7,734 | 0.999 | 98.7% | 0.03% | 98.4% | 0.03% |
+| `malformed` | 11,943 | 0.994 | 94.6% | 0.08% | 93.7% | 0.02% |
+| `obfuscation` | 12,620 | 0.993 | 91.7% | 0.17% | 88.9% | 0.07% |
+| `sql_injection` | 7,913 | 0.992 | 90.1% | 0.10% | 86.1% | 0.05% |
+| `markup_injection` | 8,287 | 0.997 | 93.9% | 0.07% | 91.3% | 0.03% |
+| `path_traversal` | 9,248 | 0.993 | 89.3% | 0.16% | 84.9% | 0.08% |
+| `command_injection` | 8,067 | 0.972 | 75.5% | 0.44% | 64.7% | 0.18% |
+| `template_injection` | 7,974 | 0.992 | 88.7% | 0.09% | 83.2% | 0.04% |
+| `header_injection` | 7,730 | 0.996 | 93.8% | 0.12% | 90.9% | 0.06% |
 
 | Threshold | Benign samples flagged in any category | Attack samples flagged in any category |
 | --- | --- | --- |
-| 128 | 0.90% | 98.5% |
-| 192 | 0.39% | 98.0% |
-| 230 | 0.21% | 97.3% |
+| 128 | 1.19% | 98.1% |
+| 192 | 0.51% | 97.2% |
+| 230 | 0.23% | 95.9% |
 
-Quantization moves a score by 0.67 on average compared with the float
+Quantization moves a score by 0.95 on average compared with the float
 network.
+
+The test split comes from the current generator, which produces far more
+varied attacks, obfuscation, and benign look-alikes than the one that the
+previous model was trained on. On this split the previous model flagged
+5.79% of benign samples and 93.8% of attack samples in some category at
+threshold 128, so the new data is harder and the retrained model does
+better on it.
 
 `tests/data/` holds a hand-written development set of 63 attack strings and
 72 benign strings that do not come from the generator. At threshold 128 the
-model flags 60 of the 63 attack strings in their own category and 1 of the 72
-benign strings in any category. `tests/model_quality.rs` fails when a model
-does clearly worse. The set was consulted while the fingerprint layout and
-the training data were designed, so it is not a held-out test set.
+model flags 62 of the 63 attack strings in their own category and none of the
+72 benign strings in any category. The previous model flagged 60 and 1.
+`tests/model_quality.rs` fails when a model does clearly worse. The set was
+consulted while the fingerprint layout and the training data were designed,
+so it is not a held-out test set.
 
 ## Limits
 
@@ -201,14 +209,17 @@ the training data were designed, so it is not a held-out test set.
   positives on your own traffic before acting on a threshold.
 - Benign text that the generator does not cover can score high. A known
   example is a shell command quoted in prose or documentation, which scores
-  as `command_injection`. The benign data never contains a relative path
-  with `../`. The relative paths in the development set score low, but that
-  is a handful of strings.
+  as `command_injection`. The benign data contains relative paths that
+  climb one or two levels to an ordinary file, but a deeper `../` chain or
+  one that reaches a well-known sensitive file is always an attack in the
+  training data.
 - `command_injection` has the lowest recall. Short shell fragments share
   most of their bytes with ordinary text, and the model misses many of them
   rather than flag that text.
 - Very short inputs carry little evidence. The development set shows misses
-  on an 8-byte SQL fragment and on a lone trailing percent sign.
+  on short fragments; the one development string that the model misses is a
+  15-byte percent-escaped overlong sequence, which it scores as
+  `obfuscation` but not as `malformed`.
 - The attack grammars cover common textbook forms of each category. They are
   not a catalog of evasion techniques, and an attacker who knows the model
   can search for inputs that score low.

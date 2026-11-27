@@ -20,10 +20,10 @@ const BENIGN: &str = include_str!("data/benign.txt");
 const THRESHOLD: u8 = 128;
 
 /// At least this many attack lines must be flagged in their own category.
-const MIN_ATTACKS_FLAGGED: usize = 57;
+const MIN_ATTACKS_FLAGGED: usize = 59;
 
 /// At most this many benign lines may be flagged in any category.
-const MAX_BENIGN_FLAGGED: usize = 3;
+const MAX_BENIGN_FLAGGED: usize = 2;
 
 fn category(name: &str) -> Category {
     Category::ALL
