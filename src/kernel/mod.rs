@@ -6,9 +6,30 @@
 //! implementation returns the same 32-bit results as [`scalar`], which is the
 //! reference.
 
+use crate::Backend;
 use crate::backend::Verified;
 
 pub(crate) mod scalar;
+
+#[cfg(target_arch = "x86_64")]
+#[path = "x86_64.rs"]
+mod arch;
+
+/// The target has no kernel of its own.
+#[cfg(not(target_arch = "x86_64"))]
+mod arch {
+    use super::{Matrix, scalar};
+    use crate::Backend;
+    use crate::backend::Verified;
+
+    pub(super) fn supports(_backend: Backend) -> bool {
+        false
+    }
+
+    pub(super) fn matvec(_backend: Verified, matrix: &Matrix, input: &[u8], out: &mut [i32]) {
+        scalar::matvec(matrix, input, out);
+    }
+}
 
 /// A row-major matrix of signed 8-bit weights.
 ///
@@ -57,7 +78,10 @@ impl Matrix {
     }
 
     /// Returns the sum of the weights of each row.
-    #[cfg_attr(not(test), expect(dead_code, reason = "used by offset-based kernels"))]
+    #[cfg_attr(
+        not(any(test, target_arch = "x86_64")),
+        expect(dead_code, reason = "used by kernels that bias the activations")
+    )]
     pub(crate) fn row_sums(&self) -> &[i32] {
         &self.row_sums
     }
@@ -88,8 +112,15 @@ pub(crate) fn matvec(backend: Verified, matrix: &Matrix, input: &[u8], out: &mut
     debug_assert_eq!(input.len(), matrix.cols());
     debug_assert_eq!(out.len(), matrix.rows());
     match backend.get() {
-        crate::Backend::Scalar => scalar::matvec(matrix, input, out),
+        Backend::Scalar => scalar::matvec(matrix, input, out),
+        _ => arch::matvec(backend, matrix, input, out),
     }
+}
+
+/// Returns whether the running CPU and operating system are detected to
+/// support `backend`.
+pub(crate) fn supports(backend: Backend) -> bool {
+    backend == Backend::Scalar || arch::supports(backend)
 }
 
 #[cfg(test)]
@@ -134,7 +165,7 @@ pub(crate) mod tests {
 
     /// Returns the backends that can run here, with the scalar one last.
     fn supported_backends() -> Vec<Verified> {
-        crate::Backend::PREFERENCE
+        Backend::PREFERENCE
             .iter()
             .filter_map(|&backend| Verified::new(backend).ok())
             .collect()
@@ -200,6 +231,41 @@ pub(crate) mod tests {
                 .map(|index| if index % 3 == 0 { 255 } else { 0 })
                 .collect();
             assert_backends_agree(&matrix, &input, &format!("{cols} alternating columns"));
+        }
+    }
+
+    #[test]
+    fn backends_agree_when_sums_wrap() {
+        // A model never has rows this wide, because validation bounds every
+        // sum by `i32::MAX`. The kernel contract still defines the result:
+        // the sum wraps at 32 bits, here several times over.
+        for cols in [70_001, 140_017] {
+            for weights in [[127i8, 127], [-127, -127], [127, -127]] {
+                let row: Vec<i8> = (0..cols).map(|index| weights[index % 2]).collect();
+                let matrix = Matrix::new(row.into(), cols).unwrap();
+                let input = vec![255u8; cols];
+                let context = format!("{cols} columns of {weights:?}");
+                assert_backends_agree(&matrix, &input, &context);
+            }
+            let exact = 255 * 127 * cols as i64;
+            assert!(exact > i64::from(i32::MAX));
+            let matrix = Matrix::new(vec![127; cols].into(), cols).unwrap();
+            let mut out = [0i32];
+            matvec(Verified::SCALAR, &matrix, &vec![255; cols], &mut out);
+            assert_eq!(i64::from(out[0]), i64::from(exact as i32));
+        }
+    }
+
+    #[test]
+    fn backends_are_reported() {
+        // Run with `--nocapture` to record which kernels a test run executed.
+        for &backend in Backend::PREFERENCE {
+            let status = if supports(backend) {
+                "executed"
+            } else {
+                "skipped, not supported"
+            };
+            eprintln!("kernel backend {backend}: {status}");
         }
     }
 

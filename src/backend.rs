@@ -12,12 +12,18 @@ use core::fmt;
 pub enum Backend {
     /// Portable safe Rust. Supported everywhere.
     Scalar,
+    /// x86-64 with AVX-512 F, BW, and VNNI: 64 bytes per `VPDPBUSD`.
+    Avx512Vnni,
+    /// x86-64 with AVX2 and AVX-VNNI: 32 bytes per VEX-encoded `VPDPBUSD`.
+    AvxVnni,
+    /// x86-64 with AVX2: 32 bytes per `VPMADDUBSW` and `VPMADDWD` pair.
+    Avx2,
 }
 
 impl Backend {
     /// The backends for the target architecture in order of preference,
     /// ending with [`Backend::Scalar`].
-    pub const PREFERENCE: &'static [Self] = &[Self::Scalar];
+    pub const PREFERENCE: &'static [Self] = PREFERENCE;
 
     /// Returns the first backend in [`Backend::PREFERENCE`] that the running
     /// CPU and operating system are detected to support.
@@ -36,9 +42,7 @@ impl Backend {
     /// A backend for another architecture is never supported.
     #[must_use]
     pub fn is_supported(self) -> bool {
-        match self {
-            Self::Scalar => true,
-        }
+        crate::kernel::supports(self)
     }
 
     /// Returns a stable `snake_case` identifier, suitable for metric labels.
@@ -46,9 +50,23 @@ impl Backend {
     pub const fn name(self) -> &'static str {
         match self {
             Self::Scalar => "scalar",
+            Self::Avx512Vnni => "avx512_vnni",
+            Self::AvxVnni => "avx_vnni",
+            Self::Avx2 => "avx2",
         }
     }
 }
+
+#[cfg(target_arch = "x86_64")]
+const PREFERENCE: &[Backend] = &[
+    Backend::Avx512Vnni,
+    Backend::AvxVnni,
+    Backend::Avx2,
+    Backend::Scalar,
+];
+
+#[cfg(not(target_arch = "x86_64"))]
+const PREFERENCE: &[Backend] = &[Backend::Scalar];
 
 impl fmt::Display for Backend {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -104,6 +122,17 @@ impl Verified {
         }
     }
 
+    /// Accepts `backend` without detection.
+    ///
+    /// # Safety
+    ///
+    /// The running CPU must implement every CPU feature of `backend`, and the
+    /// operating system must have enabled them for this process.
+    #[expect(unsafe_code, reason = "the caller vouches for CPU features")]
+    pub(crate) const unsafe fn new_unchecked(backend: Backend) -> Self {
+        Self(backend)
+    }
+
     /// Returns the verified backend.
     pub(crate) const fn get(self) -> Backend {
         self.0
@@ -143,6 +172,44 @@ mod tests {
         assert!(Backend::Scalar.is_supported());
         assert_eq!(Verified::new(Backend::Scalar), Ok(Verified::SCALAR));
         assert_eq!(Backend::Scalar.to_string(), "scalar");
+    }
+
+    #[test]
+    fn names_are_unique() {
+        let all = [
+            Backend::Scalar,
+            Backend::Avx512Vnni,
+            Backend::AvxVnni,
+            Backend::Avx2,
+        ];
+        for (index, backend) in all.iter().enumerate() {
+            assert!(
+                all[..index]
+                    .iter()
+                    .all(|other| other.name() != backend.name())
+            );
+        }
+    }
+
+    #[test]
+    fn backends_of_other_architectures_are_unsupported() {
+        let x86_64 = [Backend::Avx512Vnni, Backend::AvxVnni, Backend::Avx2];
+        if !cfg!(target_arch = "x86_64") {
+            for backend in x86_64 {
+                assert!(!backend.is_supported());
+                assert_eq!(Verified::new(backend), Err(UnsupportedBackend(backend)));
+            }
+        }
+    }
+
+    #[test]
+    #[cfg(target_arch = "x86_64")]
+    fn x86_64_backends_imply_weaker_ones() {
+        // AVX-512 implies AVX2 on every CPU. AVX-VNNI is detected together
+        // with AVX2 by construction.
+        if Backend::Avx512Vnni.is_supported() || Backend::AvxVnni.is_supported() {
+            assert!(Backend::Avx2.is_supported());
+        }
     }
 
     #[test]
