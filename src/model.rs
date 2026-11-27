@@ -179,7 +179,30 @@ pub struct Model {
     layers: Box<[Layer]>,
 }
 
+/// The bytes of the default model that the crate embeds.
+///
+/// The model was trained on synthetic data with the tools in `tools/train/`,
+/// whose documentation lists the procedure and the measured limits.
+pub const DEFAULT_MODEL: &[u8] = include_bytes!("../models/default.s2fp");
+
 impl Model {
+    /// Returns the default model that the crate embeds.
+    ///
+    /// Treat its scores as one signal among several. It was trained on
+    /// synthetic data and has not been measured on real traffic.
+    ///
+    /// Each call parses [`DEFAULT_MODEL`] and allocates about 200 KiB.
+    ///
+    /// # Panics
+    ///
+    /// Never in a build that passed the crate's tests. The model bytes are
+    /// compiled into the crate, so parsing them has the same result on every
+    /// call, and a test checks that they are valid.
+    #[must_use]
+    pub fn embedded() -> Self {
+        Self::from_bytes(DEFAULT_MODEL).expect("the embedded model is valid")
+    }
+
     /// Parses and validates a model.
     ///
     /// Parsing reads `bytes` once, allocates at most the size of `bytes`
@@ -783,6 +806,41 @@ pub(crate) mod tests {
                     .iter()
                     .all(|other| other.to_string() != message)
             );
+        }
+    }
+
+    /// Golden vectors written by `tools/train/train.py`: for each vector, a
+    /// fingerprint followed by the scores that the training tools' integer
+    /// simulation computed for it.
+    const GOLDEN: &[u8] = include_bytes!("../models/default.golden");
+
+    #[test]
+    fn embedded_model_is_valid() {
+        let model = Model::embedded();
+        assert_eq!(model.layer_sizes().last(), Some(Category::COUNT));
+        assert_eq!(Model::from_bytes(DEFAULT_MODEL), Ok(model));
+    }
+
+    #[test]
+    fn embedded_model_matches_golden_vectors_on_every_backend() {
+        let model = Model::embedded();
+        let (vectors, rest) = GOLDEN.as_chunks::<{ FINGERPRINT_LEN + Category::COUNT }>();
+        assert!(rest.is_empty() && !vectors.is_empty());
+        let backends = crate::Backend::PREFERENCE
+            .iter()
+            .filter_map(|&backend| Verified::new(backend).ok());
+        for backend in backends {
+            for (index, vector) in vectors.iter().enumerate() {
+                let (features, expected) = vector.split_at(FINGERPRINT_LEN);
+                let fingerprint = Fingerprint::from_array(features.try_into().unwrap());
+                let scores = model.infer(backend, &fingerprint);
+                assert_eq!(
+                    scores.as_array().as_slice(),
+                    expected,
+                    "golden vector {index}, backend {}",
+                    backend.get()
+                );
+            }
         }
     }
 }

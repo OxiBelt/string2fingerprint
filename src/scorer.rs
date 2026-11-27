@@ -12,22 +12,11 @@ use crate::{Backend, Scores};
 /// ```
 /// use string2fingerprint::{Category, Scorer};
 ///
-/// # fn main() -> Result<(), string2fingerprint::model::ModelError> {
-/// # let model_bytes = {
-/// #     let mut bytes = b"S2FP\x01\x00\x01\x00\x00\x0c\x08\x00\x01\x00\x00\x00".to_vec();
-/// #     bytes.resize(bytes.len() + 8 * (8 + 3072), 0);
-/// #     let sum = bytes.iter().fold(0x811C_9DC5u32, |hash, &byte| {
-/// #         (hash ^ u32::from(byte)).wrapping_mul(0x0100_0193)
-/// #     });
-/// #     bytes.extend(sum.to_le_bytes());
-/// #     bytes
-/// # };
-/// let model = string2fingerprint::model::Model::from_bytes(&model_bytes)?;
-/// let scorer = Scorer::with_model(model);
-/// let scores = scorer.score(b"GET /index.html?id=1 HTTP/1.1");
-/// let _sql = scores.get(Category::SqlInjection);
-/// # Ok(())
-/// # }
+/// let scorer = Scorer::new();
+/// let scores = scorer.score(b"/search?q=1%27%20OR%20%271%27=%271");
+/// if scores.get(Category::SqlInjection) >= 192 {
+///     // Act on the request, for example log or block it.
+/// }
 /// ```
 #[derive(Clone, Debug)]
 pub struct Scorer {
@@ -35,7 +24,23 @@ pub struct Scorer {
     backend: Verified,
 }
 
+impl Default for Scorer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Scorer {
+    /// Creates a scorer that runs the embedded default model on the preferred
+    /// backend that the running CPU supports. See [`Model::embedded`].
+    ///
+    /// Each call parses the model and allocates about 200 KiB. Create one
+    /// scorer and share it instead of creating one for each input.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::with_model(Model::embedded())
+    }
+
     /// Creates a scorer that runs `model` on the preferred backend that the
     /// running CPU supports. See [`Backend::detect`].
     #[must_use]

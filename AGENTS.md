@@ -14,7 +14,12 @@ backend rules. Change that document together with the behavior it describes.
 - `Cargo.toml` and `rust-toolchain.toml` hold package metadata, lints, and the
   pinned Rust toolchain.
 - `src/` contains the library source.
+- `models/` contains the embedded default model and its golden vectors.
+- `examples/` contains command-line tools that score input and convert a
+  training corpus into fingerprints.
+- `tools/train/` contains the corpus generator and the training tools.
 - `docs/` contains the design document.
+- `tests/` contains Cargo integration tests, with their data in `tests/data/`.
 - `tests/scripts/` contains the Markdown checker and its tests.
 - `.github/workflows/` contains the CI workflows.
 - `README.md` gives the project status and contributor entry points.

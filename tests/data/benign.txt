@@ -1,0 +1,72 @@
+Hello, world!
+The quick brown fox jumps over the lazy dog.
+GET /index.html HTTP/1.1
+/api/v1/users/12345/profile
+/search?q=rust+programming&page=2&sort=desc
+/images/logo.png?v=1.2.3
+name=John+Doe&email=john.doe%40example.com&age=30
+Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36
+text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8
+en-US,en;q=0.9,ko;q=0.8
+gzip, deflate, br
+session=abc123def456; theme=dark; lang=en
+{"name":"Alice","age":30,"tags":["a","b"],"active":true}
+{"query":"best pizza near me","limit":10,"offset":0}
+eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U
+550e8400-e29b-41d4-a716-446655440000
+2024-01-15T10:30:00Z
+192.168.1.1
+user@example.com
++1 (555) 123-4567
+I can't believe it's not butter!
+O'Brien's pub is at 5 o'clock.
+Please select one option from the list.
+The union of two sets A and B.
+Drop me a line when you get a chance.
+What's 1+1? It's 2.
+if x < 10 and y > 5 then z = x + y
+Price: $19.99 (50% off!)
+C:\Users\John\Documents\report.docx
+/usr/local/bin/python3
+./configure && make && make install
+See README.md for details...
+안녕하세요, 반갑습니다. 오늘 날씨가 좋네요.
+こんにちは世界。今日はいい天気ですね。
+你好，世界！今天天气很好。
+Привет, мир! Как дела?
+مرحبا بالعالم
+Ünïcödé tëxt wîth àccénts
+I love cats & dogs <3
+Tom & Jerry; Batman & Robin
+a=1&b=2&c=3
+https://www.example.com/path/to/page?param=value&other=123#section
+https://example.com/search?q=hello%20world&lang=en
+Dear Sir/Madam, I am writing to enquire about the position.
+Total: 3 items; Subtotal: $45.00; Tax: $3.60
+SELECT your favorite color from the dropdown menu
+Don't forget: meeting @ 3pm -- bring snacks!
+Re: Re: Fwd: Meeting notes (updated)
+#hashtag #rustlang #webdev
+Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua.
+application/json; charset=utf-8
+multipart/form-data; boundary=----WebKitFormBoundary7MA4YWxkTrZu0gW
+Bearer eyJhbGciOiJSUzI1NiJ9.e30.abc
+max-age=31536000; includeSubDomains; preload
+W/"5d8c72a5edda8d6a"
+Mon, 15 Jan 2024 10:30:00 GMT
+bytes=0-1023
+keep-alive
+no-cache, no-store, must-revalidate
+The file is located at ../docs/guide.md relative to src.
+Use `git commit -m "fix: typo"` to commit.
+She said "hello" and he replied 'goodbye'.
+x = (a + b) * c / d - e % f;
+function add(a, b) { return a + b; }
+SGVsbG8gV29ybGQhIFRoaXMgaXMgYSBiYXNlNjQgc3RyaW5nLg==
+d41d8cd98f00b204e9800998ecf8427e
+title=Hello%20World%21&body=This%20is%20a%20test%2E
+q=caf%C3%A9+au+lait
+address=123+Main+St%2C+Apt+4B%2C+New+York%2C+NY+10001
+My password hint is "first pet's name".
+Rating: 5/5 -- would buy again!!!
+50% of users prefer option A; 30% prefer B.

@@ -24,6 +24,9 @@ jobs:
       - name: Test Markdown checker
         run: python3 -B -m unittest discover -s tests/scripts -p 'test_*.py'
 
+      - name: Test training tools
+        run: python3 -B -m unittest discover -s tools/train -p 'test_*.py'
+
       - name: Check tracked Markdown links and anchors
         run: python3 -B tests/scripts/check_markdown_links.py --repo-root .
 
