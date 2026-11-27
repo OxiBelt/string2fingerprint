@@ -201,6 +201,26 @@ model flags 62 of the 63 attack strings in their own category and none of the
 consulted while the fingerprint layout and the training data were designed,
 so it is not a held-out test set.
 
+### Every Model
+
+`build_models.py` trained the four presets of `models.json` on the same
+splits. The crate embeds all of them, and `EmbeddedModel` names them. The
+table gives the mean AUC over the categories and the share of test samples
+flagged in any category at threshold 128, on the synthetic test split, and
+the results on the development set.
+
+| Model | Layers | Bytes | Mean AUC | Attacks flagged at 128 | Benign flagged at 128 | Development attacks | Development benign |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `compact` | 3072, 32, 8 | 98,906 | 0.989 | 97.2% | 1.24% | 57 of 63 | 0 of 72 |
+| `default` | 3072, 64, 64, 8 | 202,336 | 0.991 | 98.1% | 1.19% | 62 of 63 | 0 of 72 |
+| `large` | 3072, 192, 96, 8 | 611,424 | 0.992 | 98.5% | 1.03% | 61 of 63 | 0 of 72 |
+| `strict` | 3072, 64, 64, 8 | 202,336 | 0.990 | 97.6% | 0.55% | 61 of 63 | 0 of 72 |
+
+`strict` trades a little recall for half the benign rate of `default`.
+`compact` misses more development strings than the others, and
+`large` separates best on the synthetic split at three times the cost of
+`default`. `tests/model_quality.rs` holds a limit for each model.
+
 ## Limits
 
 - The model has not been measured on real traffic. The results above come

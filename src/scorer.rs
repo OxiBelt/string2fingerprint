@@ -3,7 +3,7 @@
 use crate::backend::{UnsupportedBackend, Verified};
 use crate::fingerprint::{Fingerprint, fingerprints};
 use crate::kernel::selftest;
-use crate::model::Model;
+use crate::model::{EmbeddedModel, Model};
 use crate::{Backend, Scores};
 
 /// Scores untrusted bytes with a [`Model`].
@@ -40,6 +40,13 @@ impl Scorer {
     #[must_use]
     pub fn new() -> Self {
         Self::with_model(Model::embedded())
+    }
+
+    /// Creates a scorer that runs an embedded model on the preferred backend
+    /// that the running CPU supports. See [`EmbeddedModel`].
+    #[must_use]
+    pub fn with_embedded(model: EmbeddedModel) -> Self {
+        Self::with_model(model.load())
     }
 
     /// Creates a scorer that runs `model` on the preferred backend that the

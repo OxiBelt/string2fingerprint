@@ -38,16 +38,34 @@ allocates no heap memory, and runs in time linear in the input length. A
 score is an integer from 0 to 255. It is a model confidence, not a calibrated
 probability, so choose thresholds by measuring on your own traffic.
 
-The embedded default model was trained on synthetic data only and has not
-been measured on real traffic. The [training tools](tools/train/README.md)
-document the data, the measured results, and the limits. Load another model
-with `Model::from_bytes` and `Scorer::with_model`.
+The crate embeds four models, which `EmbeddedModel` names:
+
+| Model | Hidden layers | Size | Use |
+| --- | --- | --- | --- |
+| `compact` | 32 | 97 KiB | The fastest, where every microsecond counts. |
+| `default` | 64, 64 | 198 KiB | The balance that `Scorer::new` uses. |
+| `large` | 192, 96 | 597 KiB | The best separation, at about three times the cost. |
+| `strict` | 64, 64 | 198 KiB | Flags less benign text and misses more attacks, for blocking. |
+
+```rust
+use string2fingerprint::Scorer;
+use string2fingerprint::model::EmbeddedModel;
+
+let scorer = Scorer::with_embedded(EmbeddedModel::Strict);
+```
+
+A program that uses only `Scorer::new` links only the default model. The
+embedded models were trained on synthetic data only and have not been
+measured on real traffic. The [training tools](tools/train/README.md)
+document the data, the measured results of each model, and the limits. Load
+another model with `Model::from_bytes` and `Scorer::with_model`.
 
 To score lines of standard input from the command line, or to measure
 throughput for each backend that the CPU supports:
 
 ```sh
 cargo run --release --example score < lines.txt
+cargo run --release --example score large < lines.txt
 cargo bench
 ```
 

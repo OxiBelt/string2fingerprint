@@ -137,8 +137,10 @@ size of the byte string. It validates every field and reports a fixed error
 kind without echoing model bytes. The checksum detects accidental corruption.
 It is not an authenticity check, so load models only from a trusted source.
 
-The crate embeds a default model. Its training procedure, data, and measured
-limits are documented with the [training tools](../tools/train/README.md).
+The crate embeds several models in this format, which differ in their
+hidden layers and in the weight that training gave to benign text. One of
+them is the default. Their training procedure, data, and measured limits are
+documented with the [training tools](../tools/train/README.md).
 
 ## Backends
 
