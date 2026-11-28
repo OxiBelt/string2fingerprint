@@ -99,6 +99,7 @@ Each workflow in `.github/workflows/` has one purpose:
 | `toolchains.yml` | Builds and tests with the minimum supported version, stable, beta, and nightly, and each feature on its own. | Each named one |
 | `targets.yml` | Clippy for other Linux targets, tests on big-endian s390x under QEMU and on 32-bit x86, and the refusal of other systems. | Pinned |
 | `docker-e2e.yml` | `tests/docker/e2e.sh` on x86-64 and Arm64, and that both give the same scores and models. | Pinned, in the Rust image |
+| `sanitizers.yml` | The tests and the kernel self-test under AddressSanitizer on x86-64 and Arm64. | A nightly of a pinned date |
 
 `check.yml` gates every change on the pinned toolchain, so its results do not
 depend on the day they ran. `toolchains.yml` also runs weekly, because new
@@ -117,6 +118,17 @@ precedence over `rust-toolchain.toml`:
 rustup toolchain install beta --profile minimal --component clippy
 RUSTUP_TOOLCHAIN=beta cargo test --all-features --locked
 cargo test --locked --features train
+```
+
+AddressSanitizer needs a nightly toolchain, and checks the memory accesses of
+every kernel that the CPU supports. On x86-64, CI also rebuilds the standard
+library with it, which needs `rust-src`. On Arm64 the pinned nightly crashes
+with a rebuilt standard library, so CI leaves out `-Zbuild-std` there:
+
+```sh
+rustup toolchain install nightly-2026-11-28 --profile minimal --component rust-src
+RUSTUP_TOOLCHAIN=nightly-2026-11-28 RUSTFLAGS=-Zsanitizer=address \
+  cargo test -Zbuild-std --target x86_64-unknown-linux-gnu --all-features --locked --lib --tests
 ```
 
 The s390x tests need `qemu-user`, `gcc-s390x-linux-gnu`, and

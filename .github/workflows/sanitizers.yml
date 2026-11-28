@@ -1,0 +1,111 @@
+name: Sanitizers
+
+# Runs the tests under AddressSanitizer, which also checks for leaks, on
+# native x86-64 and Arm64 runners, so that every SIMD kernel that the CPU
+# supports reads only memory that it may read. On x86-64 the standard
+# library is rebuilt with the sanitizer too. Sanitizers need a nightly
+# toolchain. The date is pinned, so that a result does not depend on the
+# day it ran. Move it forward from time to time.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  # Takes precedence over `rust-toolchain.toml`.
+  RUSTUP_TOOLCHAIN: nightly-2026-11-28
+
+jobs:
+  address:
+    name: AddressSanitizer (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The standard library is rebuilt with the sanitizer, so that
+          # memory that it allocates is checked too.
+          - arch: x86_64
+            runner: ubuntu-26.04
+            build_std: -Zbuild-std
+          # On Arm64, any program built with a rebuilt standard library
+          # crashes with SIGSEGV on this nightly, even one without the
+          # crate, so the shipped library is linked. The crate is
+          # instrumented either way.
+          - arch: aarch64
+            runner: ubuntu-26.04-arm
+            build_std: ""
+    env:
+      RUSTFLAGS: -Zsanitizer=address
+      ASAN_OPTIONS: detect_leaks=1
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Verify native runner architecture
+        env:
+          EXPECTED_ARCH: ${{ matrix.arch }}
+        run: |
+          actual_arch="$(uname -m)"
+          if [[ "$actual_arch" != "$EXPECTED_ARCH" ]]; then
+            echo "Expected $EXPECTED_ARCH, runner reports $actual_arch" >&2
+            exit 1
+          fi
+
+      - name: Lower the address randomization for the sanitizer runtime
+        # Runner kernels randomize `mmap` with up to 33 bits, more than the
+        # shadow memory layout of AddressSanitizer is known to allow on
+        # some releases. 28 bits are within its limits on both
+        # architectures.
+        run: |
+          sudo sysctl vm.mmap_rnd_bits
+          sudo sysctl -w vm.mmap_rnd_bits=28
+
+      - name: Install the pinned nightly toolchain
+        run: |
+          rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --component rust-src --no-self-update
+          rustc --version --verbose
+
+      - name: Check that the sanitizer runtime starts
+        # A crate without this one, built the same way, so that a toolchain
+        # or runner problem is told apart from a finding in this crate.
+        env:
+          ARCH: ${{ matrix.arch }}
+          BUILD_STD: ${{ matrix.build_std }}
+        run: |
+          echo "page size $(getconf PAGESIZE), kernel $(uname -r)"
+          dir="$(mktemp -d)"
+          cargo new --quiet --vcs none --name probe "$dir/probe"
+          ASAN_OPTIONS=verbosity=1 cargo run --quiet ${BUILD_STD:+"$BUILD_STD"} \
+            --target "$ARCH-unknown-linux-gnu" --manifest-path "$dir/probe/Cargo.toml"
+          rm -r "$dir"
+
+      - name: Report the kernel backends that the tests execute
+        env:
+          ARCH: ${{ matrix.arch }}
+          BUILD_STD: ${{ matrix.build_std }}
+        run: >-
+          cargo test ${BUILD_STD:+"$BUILD_STD"} --target "$ARCH-unknown-linux-gnu" --all-features --locked
+          --lib backends_are_reported -- --nocapture
+
+      - name: Run the tests under AddressSanitizer
+        env:
+          ARCH: ${{ matrix.arch }}
+          BUILD_STD: ${{ matrix.build_std }}
+        # Documentation tests are left out. They would be built without
+        # the sanitizer.
+        run: cargo test ${BUILD_STD:+"$BUILD_STD"} --target "$ARCH-unknown-linux-gnu" --all-features --locked --lib --tests
+
+      - name: Run the kernel self-test under AddressSanitizer
+        env:
+          ARCH: ${{ matrix.arch }}
+          BUILD_STD: ${{ matrix.build_std }}
+        run: cargo run ${BUILD_STD:+"$BUILD_STD"} --target "$ARCH-unknown-linux-gnu" --all-features --locked --example kernel_self_test
