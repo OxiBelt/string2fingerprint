@@ -33,6 +33,21 @@ for (category, score) in scores.iter() {
 }
 ```
 
+To decide with a threshold for each category, and to turn a category off:
+
+```rust
+use string2fingerprint::{Category, Scorer, Threshold, Thresholds};
+
+let thresholds = Thresholds::uniform(Threshold::at(192))
+    .with(Category::CommandInjection, Threshold::at(230))
+    .with(Category::Malformed, Threshold::NEVER);
+
+let flagged = Scorer::new().score(b"/files?name=..%2f..%2fetc%2fpasswd").flagged(&thresholds);
+if !flagged.is_empty() {
+    println!("flagged: {flagged}");
+}
+```
+
 `Scorer::score` accepts any bytes of any length. It never fails or panics,
 allocates no heap memory, and runs in time linear in the input length. A
 score is an integer from 0 to 255. It is a model confidence, not a calibrated

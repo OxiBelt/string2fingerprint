@@ -84,6 +84,14 @@ impl Category {
             Self::HeaderInjection => "header_injection",
         }
     }
+
+    /// Returns the category whose [`name`](Self::name) is `name`.
+    #[must_use]
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|category| category.name() == name)
+    }
 }
 
 impl fmt::Display for Category {
@@ -111,6 +119,13 @@ mod tests {
     }
 
     #[test]
+    fn from_name_rejects_other_text() {
+        for name in ["", "benign", "Malformed", "malformed ", "sql"] {
+            assert_eq!(Category::from_name(name), None);
+        }
+    }
+
+    #[test]
     fn names_are_unique_snake_case() {
         for (index, category) in Category::ALL.into_iter().enumerate() {
             let name = category.name();
@@ -120,6 +135,7 @@ mod tests {
                     .all(|byte| byte.is_ascii_lowercase() || byte == b'_')
             );
             assert_eq!(category.to_string(), name);
+            assert_eq!(Category::from_name(name), Some(category));
             for other in &Category::ALL[..index] {
                 assert_ne!(other.name(), name);
             }

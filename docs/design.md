@@ -59,6 +59,19 @@ Inputs longer than one window are scored window by window. The score of the
 input in a category is the highest score of any window in that category, so
 padding an input with harmless text does not dilute a payload.
 
+### Thresholds
+
+A threshold turns a score into a decision. A threshold of `t` flags every
+score that is at least `t`, and the threshold `never` flags no score, which
+turns a category off. A caller can hold one threshold for each category,
+because categories differ in how well a model separates them.
+
+A set of categories is one bit for each category, by index. It names the
+categories that are flagged, or the categories that label a sample, and the
+empty set labels benign text. For one input, the flagged categories that are
+not labels are its false positives, and the labels that are not flagged are
+its false negatives.
+
 ## Pipeline
 
 ```text
