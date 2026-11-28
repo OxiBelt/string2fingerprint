@@ -332,10 +332,21 @@ pub struct LayerParameters {
 /// A borrowed view of the parameters of one layer of a [`Model`].
 ///
 /// [`Model::layer`] returns it without copying, where [`Model::layers`]
-/// copies the parameters into [`LayerParameters`].
-#[derive(Clone, Copy, Debug)]
+/// copies the parameters into [`LayerParameters`]. `Debug` shows the
+/// dimensions and the shift, not the parameters.
+#[derive(Clone, Copy)]
 pub struct LayerView<'a> {
     layer: &'a Layer,
+}
+
+impl fmt::Debug for LayerView<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("LayerView")
+            .field("inputs", &self.inputs())
+            .field("outputs", &self.outputs())
+            .field("shift", &self.shift())
+            .finish_non_exhaustive()
+    }
 }
 
 impl<'a> LayerView<'a> {
@@ -450,12 +461,30 @@ impl Layer {
 }
 
 /// A validated quantized network.
-#[derive(Clone, Debug, PartialEq, Eq)]
+///
+/// `Debug` shows the layer sizes and the number of parameters, not the
+/// parameters, and reads no weight.
+#[derive(Clone, PartialEq, Eq)]
 pub struct Model {
     /// Never empty. Consecutive dimensions match, the first layer has
     /// [`FINGERPRINT_LEN`] inputs, and the last has [`Category::COUNT`]
     /// outputs.
     layers: Box<[Layer]>,
+}
+
+impl fmt::Debug for Model {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let sizes = self.layer_sizes();
+        let mut layers = [0; MAX_LAYERS];
+        let count = sizes.len();
+        for (slot, size) in layers.iter_mut().zip(sizes) {
+            *slot = size;
+        }
+        f.debug_struct("Model")
+            .field("layer_sizes", &&layers[..count])
+            .field("parameters", &self.parameter_count())
+            .finish_non_exhaustive()
+    }
 }
 
 /// The bytes of the default model that the crate embeds.
@@ -1235,6 +1264,26 @@ pub(crate) mod tests {
             format!(
                 "Trace {{ layer_sizes: [64, 64, 8], logits: {:?}, .. }}",
                 trace.logits()
+            )
+        );
+    }
+
+    #[test]
+    fn debug_output_shows_the_shape_and_not_the_parameters() {
+        let model = Model::embedded();
+        let debug = format!("{model:?}");
+        assert_eq!(
+            debug,
+            format!(
+                "Model {{ layer_sizes: [64, 64, 8], parameters: {}, .. }}",
+                model.parameter_count()
+            )
+        );
+        assert_eq!(
+            format!("{:?}", model.layer(1).unwrap()),
+            format!(
+                "LayerView {{ inputs: 64, outputs: 64, shift: {}, .. }}",
+                model.layer(1).unwrap().shift()
             )
         );
     }
