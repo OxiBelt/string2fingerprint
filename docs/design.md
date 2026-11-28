@@ -74,6 +74,13 @@ score that is at least `t`, and the threshold `never` flags no score, which
 turns a category off. A caller can hold one threshold for each category,
 because categories differ in how well a model separates them.
 
+A detector holds a scorer and a threshold for each category, and returns the
+scores of an input together with the categories they flag. A preset pairs an
+embedded model with fixed thresholds, and the rates at which each preset flags
+attack and benign samples were measured on the synthetic test split of the
+training tools. Presets are starting points: thresholds should still be
+validated on the caller's own traffic.
+
 A set of categories is one bit for each category, by index. It names the
 categories that are flagged, or the categories that label a sample, and the
 empty set labels benign text. For one input, the flagged categories that are
