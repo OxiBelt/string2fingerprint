@@ -233,17 +233,42 @@ only operation with CPU-specific implementations.
 
 ### Model Format
 
-A model is a little-endian byte string: a magic number and version, the layer
-dimensions, the parameters of each layer, and a checksum. The input dimension
-must equal the fingerprint length and the output dimension must equal the
-number of categories. Hidden dimensions and the layer count are bounded.
-Parsing checks the length and the checksum first, so it allocates at most the
-size of the byte string. It validates every field and reports a fixed error
-kind without echoing model bytes. The checksum detects accidental corruption.
-It is not an authenticity check, so load models only from a trusted source.
-A model has exactly one encoding, so writing a parsed model gives the bytes
-it was parsed from. A model can also be created from the parameters of its
-layers, which are validated in the same way.
+A model is a little-endian byte string: a magic number and format version,
+the metadata, the layer dimensions, the parameters of each layer, and a
+checksum. The input dimension must equal the fingerprint length and the output
+dimension must equal the number of categories. Hidden dimensions and the layer
+count are bounded. Parsing checks the length and the checksum first, so it
+allocates at most the size of the byte string. It validates every field and
+reports a fixed error kind without echoing model bytes. The checksum detects
+accidental corruption. It is not an authenticity check, so load models only
+from a trusted source. A model has exactly one encoding, so writing a parsed
+model gives the bytes it was parsed from. A model can also be created from the
+parameters of its layers, which are validated in the same way.
+
+The metadata is two [versions](#versions) in their canonical text: the
+version of the fingerprint layout that the model was trained on, and a
+requirement on the versions of the crate that may load it. A model loads only
+when its layout is compatible with the layout of the crate and the version of
+the crate matches its requirement, so that a model is never used with a
+fingerprint or a network that it was not trained for. The two checks come
+after the checksum and before the input and output dimensions are compared
+with the fingerprint length and the number of categories, and the layout is
+checked first. The metadata of any model can be read without the checks, so
+that a caller can report why a model does not load, even a model of another
+fingerprint length. A model that the crate trains or creates from layers has
+the current layout and requires `^` the version of the crate, and its
+requirement can be replaced by any that the crate matches.
+
+Under the rules of Cargo, a requirement on a pre-release of the crate, such as
+`^0.1.0-dev`, matches neither `0.1.1-dev` nor `0.2.0`. When the version of the
+crate changes, a model that the new version still runs, such as an embedded
+model, is loaded with a new requirement that the caller states, and written
+again.
+
+Format version 2 is the current format. Format version 1 had no metadata, and
+every revision that wrote it extracted layout 1.0.0 and had the version
+0.1.0-dev, so a model of format 1 reads as layout 1.0.0 with the requirement
+`^0.1.0-dev` and is written again in format 2.
 
 The crate embeds several models in this format, which differ in their
 hidden layers and in the weight that training gave to benign text. One of
@@ -376,7 +401,7 @@ comparisons, rounding to an integer, and conversions between integers and
 floats. Its exponential, logarithm, and cosine are its own, built from
 them. A batch is divided into a fixed number of parts whose
 gradients are added in a fixed order, whatever thread computed them. A test
-holds the checksum of a model that a fixed run must produce.
+holds the checksum of the layers of a model that a fixed run must produce.
 
 ## Versions
 

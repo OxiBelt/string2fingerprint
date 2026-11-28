@@ -706,15 +706,16 @@ mod tests {
         assert_ne!(train(1, 2).model(), reference.model());
     }
 
-    /// The model bytes of a fixed run. Every supported architecture must
+    /// The checksum of the layers of a fixed run. Every supported architecture must
     /// give this value, because training uses only exactly rounded
     /// operations. A deliberate change to the trainer changes it.
     #[test]
     fn training_gives_the_same_model_on_every_host() {
         let data = dataset(20);
         let trained = Trainer::new(config(&[6, 5])).unwrap().train(&data).unwrap();
-        let bytes = trained.model().to_bytes();
-        let checksum = u32::from_le_bytes(bytes[bytes.len() - 4..].try_into().unwrap());
+        // The checksum of format version 1 covers the layers and not the
+        // metadata, which names the crate version.
+        let checksum = trained.model().legacy_checksum();
         assert_eq!(checksum, 0x8BA0_925D, "model checksum {checksum:#010x}");
     }
 
@@ -745,11 +746,11 @@ mod tests {
                 ..TrainConfig::fine_tuning()
             };
             let tuned = Trainer::new(config).unwrap().fine_tune(&base, &corrections);
-            tuned.unwrap().into_model().to_bytes()
+            tuned.unwrap().into_model()
         };
-        let bytes = tune(3);
-        assert_eq!(bytes, tune(1));
-        let checksum = u32::from_le_bytes(bytes[bytes.len() - 4..].try_into().unwrap());
+        let model = tune(3);
+        assert_eq!(model, tune(1));
+        let checksum = model.legacy_checksum();
         assert_eq!(checksum, 0x847B_896A, "model checksum {checksum:#010x}");
     }
 
