@@ -6,7 +6,9 @@ use std::io;
 use std::pin::{Pin, pin};
 use std::task::{Context, Poll};
 
+use string2fingerprint::fingerprint::{Fingerprint, fingerprints};
 use string2fingerprint::prelude::*;
+use string2fingerprint::tokio::fingerprint::FingerprintReader;
 use string2fingerprint::tokio::{
     AsyncDetectionStream, AsyncDetector, AsyncScoreStream, AsyncScorer, DEFAULT_INLINE_LIMIT,
 };
@@ -301,6 +303,26 @@ fn a_reader_error_is_returned() {
             .await
             .expect_err("the read fails");
         assert_eq!(error.kind(), io::ErrorKind::ConnectionReset);
+    });
+}
+
+#[test]
+fn fingerprint_readers_give_the_windows_of_the_whole_input() {
+    runtime().block_on(async {
+        for input in inputs() {
+            let expected: Vec<Fingerprint> = fingerprints(&input).collect();
+            let mut reader = FingerprintReader::new(Parts {
+                input: input.clone(),
+                at: 0,
+                part: 1000,
+            });
+            let mut windows = Vec::new();
+            while let Some(window) = reader.next_window().await.expect("no read fails") {
+                windows.push(window.clone());
+            }
+            assert_eq!(windows, expected);
+            assert_eq!(reader.len(), input.len() as u64);
+        }
     });
 }
 
