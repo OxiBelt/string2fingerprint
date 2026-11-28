@@ -186,7 +186,7 @@ const BENIGN: &str = "benign";
 ///
 /// The error does not contain the text that was parsed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct ParseCategorySetError;
+pub struct ParseCategorySetError(());
 
 impl fmt::Display for ParseCategorySetError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -224,7 +224,7 @@ impl FromStr for CategorySet {
         text.split(',').try_fold(Self::EMPTY, |set, name| {
             Category::from_name(trim(name))
                 .map(|category| set.with(category))
-                .ok_or(ParseCategorySetError)
+                .ok_or(ParseCategorySetError(()))
         })
     }
 }
@@ -353,10 +353,10 @@ mod tests {
             "malformed\n",
             "all",
         ] {
-            assert_eq!(text.parse::<CategorySet>(), Err(ParseCategorySetError));
+            assert_eq!(text.parse::<CategorySet>(), Err(ParseCategorySetError(())));
         }
         assert_eq!(
-            ParseCategorySetError.to_string(),
+            ParseCategorySetError(()).to_string(),
             "text is not a list of category names"
         );
     }
