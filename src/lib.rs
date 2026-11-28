@@ -88,6 +88,8 @@ mod stream;
 #[cfg(test)]
 mod testutil;
 mod thresholds;
+#[cfg(feature = "tokio")]
+pub mod tokio;
 #[cfg(feature = "train")]
 pub mod train;
 pub mod version;
