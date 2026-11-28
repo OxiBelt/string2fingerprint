@@ -22,3 +22,7 @@ unsafe_op_in_unsafe_fn = "deny"
 [[bench]]
 name = "score"
 harness = false
+
+[[example]]
+name = "train"
+required-features = ["train"]
