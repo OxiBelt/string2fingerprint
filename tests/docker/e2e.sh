@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Builds the image of `tests/docker/Dockerfile` and checks, end to end, the
 # programs in it: a dependent crate whose build script trained its model,
-# scoring with every embedded model, training and fine-tuning from the
+# scoring with every embedded model, deciding with every preset through the
+# synchronous and the Tokio interface, training and fine-tuning from the
 # command line, and failures on bad input.
 #
 # Usage: tests/docker/e2e.sh [--digests FILE]
@@ -219,6 +220,35 @@ for model in compact default large strict; do
   fi
 done
 
+echo "== Presets, synchronous and on Tokio"
+# `detect_async` decides on a Tokio runtime, long lines on its blocking
+# pool, and must print what `detect` prints. The hostile input has a line
+# of 1 MiB, which goes through the pool.
+for preset in fast balanced thorough strict; do
+  for input in "${inputs[@]}"; do
+    out="$work/detect_${preset}_$input.txt"
+    if ! run detect "$preset" < "$work/input_$input" > "$out" 2> /dev/null; then
+      fail "detect $preset failed on $input input"
+      continue
+    fi
+    if ! run detect_async "$preset" < "$work/input_$input" > "$out.async" 2> /dev/null; then
+      fail "detect_async $preset failed on $input input"
+      continue
+    fi
+    expected="$(line_count "$work/input_$input")"
+    rows="$(wc -l < "$out")"
+    if [[ "$rows" -ne "$expected" ]]; then
+      fail "detect $preset wrote $rows rows for $expected lines of $input input"
+    elif ! cmp -s "$out" "$out.async"; then
+      fail "detect_async $preset differs from detect on $input input"
+    fi
+    record "detect-$preset-$input" "$out"
+  done
+  pass "detect_async decides like detect with the $preset preset"
+done
+expect_status 2 "detect_async with an unknown preset" detect_async unknown
+expect_status 2 "detect_async with two arguments" detect_async strict extra
+
 echo "== Training from the command line"
 # The settings of the build script of `tests/downstream/`. Training with
 # one thread and with four must give the same model bytes. The model then
@@ -298,7 +328,7 @@ expect_status 1 "score with a truncated model file" sh -c "
   score /tmp/truncated.s2fp
 "
 
-if grep -qsF "$marker" "$work"/downstream_* "$work"/score_* "$work/trained.txt"; then
+if grep -qsF "$marker" "$work"/downstream_* "$work"/score_* "$work"/detect_* "$work/trained.txt"; then
   fail "an output contains input bytes"
 else
   pass "no output contains input bytes"

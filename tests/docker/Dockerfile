@@ -32,14 +32,17 @@ RUN --network=none RUSTUP_TOOLCHAIN="$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust
     && export RUSTUP_TOOLCHAIN \
     && rustc --version --verbose \
     && cargo build --release --locked --manifest-path tests/downstream/Cargo.toml --bin s2fp-downstream \
-    && cargo build --release --locked --features train \
+    && cargo build --release --locked --features train,tokio \
         --example score --example train --example kernel_self_test --example model_info \
+        --example detect --example detect_async \
     && mkdir -p /out/bin /out/data \
     && cp tests/downstream/target/release/s2fp-downstream \
         target/release/examples/score \
         target/release/examples/train \
         target/release/examples/kernel_self_test \
         target/release/examples/model_info \
+        target/release/examples/detect \
+        target/release/examples/detect_async \
         /out/bin/ \
     && cp tests/data/benign.txt tests/data/attacks.tsv /out/data/
 
