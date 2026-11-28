@@ -52,6 +52,15 @@ jobs:
             exit 1
           fi
 
+      - name: Lower the address randomization for the sanitizer runtime
+        # Runner kernels randomize `mmap` with more bits than the shadow
+        # memory layout of AddressSanitizer allows, and an instrumented
+        # program then crashes with SIGSEGV before `main`. 28 bits work on
+        # both architectures.
+        run: |
+          sysctl vm.mmap_rnd_bits
+          sudo sysctl -w vm.mmap_rnd_bits=28
+
       - name: Install the pinned nightly toolchain
         run: |
           rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --component rust-src --no-self-update
