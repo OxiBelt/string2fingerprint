@@ -197,7 +197,8 @@ fn models_load_only_where_their_versions_fit() {
 
     let cases = [
         ("2.0.0", "^0.1.0-dev", ModelError::IncompatibleLayout),
-        ("1.1.0", "^0.1.0-dev", ModelError::IncompatibleLayout),
+        ("1.0.0-rc.1", "^0.1.0-dev", ModelError::IncompatibleLayout),
+        ("1.4.2", ">=99.0.0", ModelError::UnsupportedLibrary),
         ("1.0.0", ">=99.0.0", ModelError::UnsupportedLibrary),
         ("1.0.0", "1.0.0", ModelError::InvalidMetadata),
         ("1.0", "^0.1.0-dev", ModelError::InvalidMetadata),

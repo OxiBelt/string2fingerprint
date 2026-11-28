@@ -205,6 +205,15 @@ example prints the versions of model files and whether this crate loads them:
 cargo run --release --example model_info -- route.s2fp default
 ```
 
+A layout is compatible when its major number equals that of
+`fingerprint::LAYOUT_VERSION` and it has no pre-release, since any change to
+the fingerprint raises the major number. As in Cargo, a pre-release crate
+version such as `0.2.0-rc.1` matches only a requirement that names a
+pre-release of the same `0.2.0`, so a model saved for `^0.1.0` does not load
+there. `Model::from_bytes_with_library_requirement`, or `model_info
+--library-requirement REQ --out FILE MODEL`, states a new range for a model
+whose layers still fit.
+
 Files of format version 1, written before the versions were recorded, load
 as layout 1.0.0 with the requirement `^0.1.0-dev`.
 
