@@ -632,7 +632,7 @@ pub(crate) mod tests {
         assert_eq!(Kernel::default(), Kernel::detect());
         assert_eq!(Kernel::SCALAR.backend(), Backend::Scalar);
         assert_eq!(Kernel::SCALAR.to_string(), "scalar");
-        for backend in Backend::ALL {
+        for &backend in Backend::ALL {
             match Kernel::new(backend) {
                 Ok(kernel) => {
                     assert!(backend.is_supported());

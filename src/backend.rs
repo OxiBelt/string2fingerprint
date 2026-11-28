@@ -60,7 +60,9 @@ impl Backend {
     /// Every backend of every architecture, starting with
     /// [`Backend::Scalar`], then the backends of x86-64, AArch64, and
     /// RISC-V 64, each in order of preference.
-    pub const ALL: [Self; 10] = [
+    ///
+    /// The type is a slice, so that a new backend does not change it.
+    pub const ALL: &'static [Self] = &[
         Self::Scalar,
         Self::Avx512Vnni,
         Self::AvxVnni,
@@ -103,8 +105,11 @@ impl Backend {
         crate::kernel::supports(self)
     }
 
-    /// Returns the CPU features that the backend needs, all of which are
-    /// detected before it is selected.
+    /// Returns the CPU features that the kernel of the backend needs.
+    ///
+    /// Detection checks every one of them, except for an experimental
+    /// backend, which is never detected and runs only through an `unsafe`
+    /// opt-in in which the caller vouches for them.
     ///
     /// The names are those of the `std` feature detection macros, except
     /// for features that the macros do not know: `svei8mm` is the Linux name
@@ -138,7 +143,10 @@ impl Backend {
     /// Returns the backend whose [`name`](Self::name) is `name`.
     #[must_use]
     pub fn from_name(name: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|backend| backend.name() == name)
+        Self::ALL
+            .iter()
+            .copied()
+            .find(|backend| backend.name() == name)
     }
 
     /// Returns a stable `snake_case` identifier, suitable for metric labels.
@@ -314,7 +322,7 @@ mod tests {
         let mut supported: Vec<Backend> = Backend::supported().collect();
         assert_eq!(supported.first(), Some(&Backend::detect()));
         assert_eq!(supported.pop(), Some(Backend::Scalar));
-        for backend in Backend::ALL {
+        for &backend in Backend::ALL {
             assert_eq!(
                 Backend::supported().any(|other| other == backend),
                 backend.is_supported()
@@ -324,7 +332,7 @@ mod tests {
 
     #[test]
     fn features_name_the_detected_extensions() {
-        for backend in Backend::ALL {
+        for &backend in Backend::ALL {
             let features = backend.cpu_features();
             assert_eq!(features.is_empty(), backend == Backend::Scalar);
             assert_eq!(features.contains(&"zvdot4a8i"), backend.is_experimental());
