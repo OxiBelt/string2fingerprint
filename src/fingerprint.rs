@@ -115,7 +115,10 @@ pub enum Section {
 
 impl Section {
     /// Every section, in fingerprint order.
-    pub const ALL: [Self; 5] = [
+    ///
+    /// The type is a slice, so that a section added with a new layout does
+    /// not change it.
+    pub const ALL: &'static [Self] = &[
         Self::LexicalBigram,
         Self::LexicalTrigram,
         Self::WordTrigram,
@@ -1079,7 +1082,7 @@ mod tests {
     #[test]
     fn sections_partition_the_fingerprint() {
         let mut next = 0;
-        for (index, section) in Section::ALL.into_iter().enumerate() {
+        for (index, &section) in Section::ALL.iter().enumerate() {
             let range = section.range();
             assert_eq!(range.start, next);
             assert_eq!((range.start, range.len() as u32), RANGES[index]);
