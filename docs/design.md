@@ -251,7 +251,7 @@ quantization that follows.
 
 Quantization gives each output of a layer its own weight scale: the largest
 weight magnitude of the output maps to 127. The bias is stored in units of
-that scale. The multiplier and the shift of the layer then convert the
+1/255 of that scale, which is the unit of the accumulator. The multiplier and the shift of the layer then convert the
 accumulator to a stored activation, or to a logit in units of 1/16 in the
 output layer. The shift is the largest for which no multiplier of the layer
 is above 2^30. The result is validated like any other model
@@ -277,8 +277,9 @@ threshold.
 
 Fine-tuning continues the training of a model on new samples. The float
 network starts from the stored parameters: a weight is its stored value
-divided by the scale of its output, and the scale follows from the multiplier
-and the shift. The layers stay those of the base model. Weight decay pulls
+multiplied by the scale of its output, and the scale follows from the
+multiplier and the shift. A base whose parameters the trainer could not store
+again is refused. The layers stay those of the base model. Weight decay pulls
 each weight towards its value in the base model, not towards zero.
 
 A tuned model changes its scores on every text that shares features with the

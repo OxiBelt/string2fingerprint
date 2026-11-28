@@ -31,7 +31,8 @@ pub struct TrainConfig {
     /// The number of units of each hidden layer, from the first. At most
     /// three layers of 1 to [`MAX_HIDDEN`] units. Without a hidden layer the
     /// model is linear. [Fine-tuning](Trainer::fine_tune) keeps the layers
-    /// of the base model and ignores this setting.
+    /// of the base model and does not use this setting, which must still
+    /// be valid.
     pub hidden: Vec<usize>,
     /// The number of passes over the data, at least 1.
     pub epochs: u32,
@@ -179,6 +180,9 @@ pub enum TrainError {
     /// A parameter became infinite or undefined, or too large for the model
     /// format. A lower learning rate usually avoids this.
     Diverged,
+    /// The base model of [fine-tuning](Trainer::fine_tune) has a multiplier
+    /// so large that the trainer cannot store its parameters again.
+    UnsupportedBase,
     /// The quantized parameters are not a valid model.
     Model(ModelError),
 }
@@ -189,6 +193,9 @@ impl fmt::Display for TrainError {
             Self::InvalidConfig(reason) => write!(f, "training configuration is invalid: {reason}"),
             Self::EmptyDataset => f.write_str("dataset has no window to train on"),
             Self::Diverged => f.write_str("training diverged"),
+            Self::UnsupportedBase => {
+                f.write_str("base model has a multiplier too large to train further")
+            }
             Self::Model(error) => write!(f, "trained parameters are not a valid model: {error}"),
         }
     }
@@ -400,6 +407,9 @@ impl Trainer {
     /// towards its value in `base`, which limits both effects together and
     /// does not replace those samples.
     ///
+    /// A hidden output whose multiplier is 0 in `base` stays 0 and learns
+    /// nothing.
+    ///
     /// ```
     /// use string2fingerprint::model::Model;
     /// use string2fingerprint::train::{Dataset, Sample, TrainConfig, Trainer};
@@ -432,7 +442,9 @@ impl Trainer {
     ///
     /// # Errors
     ///
-    /// Returns the errors of [`Trainer::train`].
+    /// Returns [`TrainError::UnsupportedBase`] when the parameters of
+    /// `base` could not be stored again, and otherwise the errors of
+    /// [`Trainer::train`].
     pub fn fine_tune(&self, base: &Model, data: &Dataset) -> Result<Trained, TrainError> {
         self.fine_tune_with_progress(base, data, |_| {})
     }
@@ -442,7 +454,7 @@ impl Trainer {
     ///
     /// # Errors
     ///
-    /// Returns the errors of [`Trainer::train`].
+    /// Returns the errors of [`Trainer::fine_tune`].
     pub fn fine_tune_with_progress(
         &self,
         base: &Model,
@@ -450,6 +462,9 @@ impl Trainer {
         progress: impl FnMut(&EpochReport),
     ) -> Result<Trained, TrainError> {
         let network = dequantize(base);
+        if quantize(&network).is_none() {
+            return Err(TrainError::UnsupportedBase);
+        }
         let anchor = network.clone();
         let rng = Rng::new(self.config.seed);
         self.run(network, Some(&anchor), data, &rng, progress)
@@ -690,6 +705,57 @@ mod tests {
     }
 
     #[test]
+    fn fine_tuning_gives_the_same_model_on_every_host() {
+        // Costs, sample weights, the pull towards the base, dropout, and a
+        // first layer large enough that the optimizer runs in parallel.
+        let base = Trainer::new(config(&[16]))
+            .unwrap()
+            .train(&dataset(20))
+            .unwrap()
+            .into_model();
+        let mut corrections = dataset(6);
+        corrections
+            .push(Sample::benign(b"note: write ' OR ' between the two UNION members").weighted(3.0))
+            .unwrap();
+        corrections.scale_weights(0.5).unwrap();
+        let tune = |threads| {
+            let config = TrainConfig {
+                costs: Costs::UNIFORM
+                    .benign(2.0)
+                    .false_negative(Category::SqlInjection, 3.0),
+                batch_size: 8,
+                learning_rate: 2e-3,
+                weight_decay: 50.0,
+                input_dropout: 0.1,
+                threads,
+                ..TrainConfig::fine_tuning()
+            };
+            let tuned = Trainer::new(config).unwrap().fine_tune(&base, &corrections);
+            tuned.unwrap().into_model().to_bytes()
+        };
+        let bytes = tune(3);
+        assert_eq!(bytes, tune(1));
+        let checksum = u32::from_le_bytes(bytes[bytes.len() - 4..].try_into().unwrap());
+        assert_eq!(checksum, 0x847B_896A, "model checksum {checksum:#010x}");
+    }
+
+    #[test]
+    fn a_base_whose_parameters_cannot_be_stored_again_is_refused() {
+        let layer = crate::model::LayerParameters {
+            shift: 1,
+            biases: vec![0; Category::COUNT],
+            multipliers: vec![i32::MAX; Category::COUNT],
+            weights: vec![127; Category::COUNT * FINGERPRINT_LEN],
+        };
+        let base = Model::from_layers(vec![layer]).unwrap();
+        let trainer = Trainer::new(TrainConfig::fine_tuning()).unwrap();
+        assert_eq!(
+            trainer.fine_tune(&base, &dataset(4)).err(),
+            Some(TrainError::UnsupportedBase)
+        );
+    }
+
+    #[test]
     fn progress_reports_every_epoch() {
         let data = dataset(10);
         let mut seen = Vec::new();
@@ -899,7 +965,7 @@ mod tests {
     }
 
     #[test]
-    fn fine_tuning_without_steps_returns_the_base_model() {
+    fn fine_tuning_without_steps_keeps_the_base_weights() {
         let data = dataset(10);
         let base = Trainer::new(config(&[7, 5]))
             .unwrap()
@@ -1017,6 +1083,10 @@ mod tests {
             "dataset has no window to train on"
         );
         assert_eq!(TrainError::Diverged.to_string(), "training diverged");
+        assert_eq!(
+            TrainError::UnsupportedBase.to_string(),
+            "base model has a multiplier too large to train further"
+        );
         let error = TrainError::from(ModelError::AccumulatorOverflow);
         assert_eq!(
             error.to_string(),
