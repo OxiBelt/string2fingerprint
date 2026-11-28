@@ -1,0 +1,6 @@
+# The image in `tests/docker/` builds from the working tree, without Git
+# data and build output.
+.git/
+target/
+tests/downstream/target/
+**/__pycache__/
