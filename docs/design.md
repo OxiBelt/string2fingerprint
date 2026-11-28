@@ -197,16 +197,15 @@ to the bytes that raised it. These parts are the layout, and a change to any
 of them needs every model to be retrained.
 
 The layout has a [version](#versions). Its major number changes when any input
-can get a different fingerprint. Its minor number changes when features are
-added that were zero in every fingerprint of the earlier layout, so that
-earlier models ignore them. Its patch number changes when no fingerprint
-changes. A model of layout `m` is compatible with the layout of the crate when
-that layout matches the requirement `^m`: it is not lower than `m` and has the
-same major number. The layout version stays at 1.0.0 or above and has no
-pre-release, because below 1.0.0 the caret requirement would refuse older
-models at every minor change, and a pre-release would match only models of
-its own release. The current layout is 1.0.0, which is also the layout of
-every earlier revision of the crate.
+can get a different fingerprint, including a change of the fingerprint length.
+Its minor number changes when the layout gains a part that callers can use and
+no fingerprint changes, and its patch number when it is documented or
+implemented differently and no fingerprint changes. A model of layout `m` is
+compatible with the layout of the crate when `m` has the same major number and
+no pre-release, since minor and patch changes keep every fingerprint. The
+layout version of the crate is 1.0.0 or above and has no pre-release. The
+current layout is 1.0.0, which is also the layout of every earlier revision of
+the crate.
 
 ### Network
 
