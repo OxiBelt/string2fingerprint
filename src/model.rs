@@ -45,12 +45,19 @@
 //! The two versions are the [`Metadata`] of a model. The layout version is
 //! the [`LAYOUT_VERSION`] of the fingerprint that the model was trained on,
 //! and the library requirement names the versions of this crate that may
-//! load the model. [`Model::from_bytes`] refuses a model unless
-//! [`LAYOUT_VERSION`] matches the requirement `^layout` and
-//! [`VERSION`](crate::VERSION) matches the library requirement, so that a
+//! load the model. [`Model::from_bytes`] refuses a model unless its layout
+//! version has the major number of [`LAYOUT_VERSION`] and no pre-release,
+//! and [`VERSION`](crate::VERSION) matches the library requirement, so that a
 //! model is never used with a fingerprint or a network that it was not
 //! trained for. [`Metadata::read`] reads the versions of any model without
-//! checking them.
+//! checking them, and without comparing its input and output dimensions
+//! with this crate.
+//!
+//! A requirement can exclude a later version of this crate that still runs
+//! the model, such as `^0.1.0-dev` and the version `0.2.0`.
+//! [`Model::from_bytes_with_library_requirement`] then loads the model with
+//! a new requirement, which is how the embedded models follow a change of
+//! the crate version.
 //!
 //! ```
 //! use string2fingerprint::fingerprint::LAYOUT_VERSION;
@@ -436,11 +443,13 @@ impl Metadata {
         &self.library_requirement
     }
 
-    /// Returns whether [`LAYOUT_VERSION`] is compatible with the layout of
-    /// the model: whether it matches the requirement `^layout`.
+    /// Returns whether the layout of the model is compatible with
+    /// [`LAYOUT_VERSION`]: whether it has the same major number and no
+    /// pre-release.
     #[must_use]
     pub fn is_layout_compatible(&self) -> bool {
-        VersionReq::caret(&self.layout_version).matches(&LAYOUT_VERSION)
+        self.layout_version.major() == LAYOUT_VERSION.major()
+            && !self.layout_version.is_prerelease()
     }
 
     /// Returns whether [`VERSION`](crate::VERSION) matches the library
@@ -817,15 +826,24 @@ impl Model {
     /// # Errors
     ///
     /// Returns the first [`ModelError`] found: of the header, the length,
-    /// the checksum, the [`Metadata`] and its [check](Metadata::check), and
-    /// then the layers. See the [module documentation](self) for the format
+    /// the checksum, the [`Metadata`] and its [check](Metadata::check), the
+    /// input and output dimensions, and then the layers. See the [module documentation](self) for the format
     /// and its constraints.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, ModelError> {
         let header = Header::read(bytes)?;
         let metadata = header.metadata()?;
+        Self::from_header(header, metadata)
+    }
+
+    /// Checks `metadata`, which replaces that of `header`, and reads the
+    /// layers that follow `header`.
+    fn from_header(header: Header<'_>, metadata: Metadata) -> Result<Self, ModelError> {
         metadata.check()?;
         let layer_count = header.layer_count;
         let dimensions = &header.dimensions[..=layer_count];
+        if dimensions[0] != FINGERPRINT_LEN || dimensions[layer_count] != Category::COUNT {
+            return Err(ModelError::InvalidDimensions);
+        }
         let mut reader = header.reader;
         let mut layers = Vec::with_capacity(layer_count);
         for pair in dimensions.windows(2) {
@@ -847,6 +865,32 @@ impl Model {
             layers: layers.into(),
             metadata,
         })
+    }
+
+    /// Parses and validates a model as [`Model::from_bytes`] does, with
+    /// `requirement` in place of its library requirement.
+    ///
+    /// The layout version, the format, and the parameters are checked as
+    /// before, and [`VERSION`](crate::VERSION) must match `requirement`.
+    /// The caller vouches that this crate runs the model as the crate that
+    /// trained it did, for example after a release that kept the network
+    /// and the scores, and [`Model::to_bytes`] then writes the new
+    /// requirement.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first [`ModelError`] that [`Model::from_bytes`] would
+    /// return, with [`ModelError::UnsupportedLibrary`] when `requirement`
+    /// does not match [`VERSION`](crate::VERSION). The stored requirement is
+    /// not checked against [`VERSION`](crate::VERSION), but it must still be
+    /// valid.
+    pub fn from_bytes_with_library_requirement(
+        bytes: &[u8],
+        requirement: VersionReq,
+    ) -> Result<Self, ModelError> {
+        let header = Header::read(bytes)?;
+        let metadata = Metadata::new(*header.metadata()?.layout_version(), requirement);
+        Self::from_header(header, metadata)
     }
 
     /// Validates the parameters of every layer, from the first hidden layer
@@ -1238,9 +1282,12 @@ impl<'a> Header<'a> {
         for dimension in &mut dimensions[..=layer_count] {
             *dimension = usize::from(reader.u16()?);
         }
+        // The input and output dimensions are compared with this crate only
+        // after the metadata, so that the metadata of a model of another
+        // layout can be read and its layout reported.
         let hidden = &dimensions[1..layer_count];
-        if dimensions[0] != FINGERPRINT_LEN
-            || dimensions[layer_count] != Category::COUNT
+        if dimensions[0] == 0
+            || dimensions[layer_count] == 0
             || hidden
                 .iter()
                 .any(|dimension| !(1..=MAX_HIDDEN).contains(dimension))
@@ -1248,11 +1295,17 @@ impl<'a> Header<'a> {
             return Err(ModelError::InvalidDimensions);
         }
 
-        let body: usize = dimensions[..=layer_count]
+        // Dimensions below 2^16 and at most `MAX_LAYERS` layers keep the sum
+        // below 2^35. A length that does not fit `usize` exceeds any slice.
+        let body: u64 = dimensions[..=layer_count]
             .windows(2)
-            .map(|pair| 4 + pair[1] * (8 + pair[0]))
+            .map(|pair| 4 + pair[1] as u64 * (8 + pair[0] as u64))
             .sum();
-        let checksum_at = reader.position() + body;
+        let checksum_at = usize::try_from(body)
+            .ok()
+            .and_then(|body| body.checked_add(reader.position()))
+            .filter(|&at| at <= bytes.len().saturating_sub(4))
+            .ok_or(ModelError::Truncated)?;
         match bytes.len().cmp(&(checksum_at + 4)) {
             core::cmp::Ordering::Less => return Err(ModelError::Truncated),
             core::cmp::Ordering::Greater => return Err(ModelError::TrailingData),
@@ -2280,7 +2333,7 @@ pub(crate) mod tests {
     #[test]
     fn refuses_incompatible_layouts() {
         let requirement = VersionReq::caret(&crate::VERSION).to_string();
-        for layout in ["1.0.0", "1.0.0+build.3", "1.0.0-rc.1", "1.0.0-alpha+x"] {
+        for layout in ["1.0.0", "1.0.0+build.3", "1.0.1", "1.1.0", "1.20.3+x"] {
             let bytes = linear_with(layout, &requirement);
             let model =
                 Model::from_bytes(&bytes).unwrap_or_else(|error| panic!("{layout}: {error}"));
@@ -2290,11 +2343,11 @@ pub(crate) mod tests {
         for layout in [
             "0.9.0",
             "0.1.0",
-            "1.0.1",
-            "1.1.0",
             "2.0.0",
             "2.0.0-rc.1",
+            "1.0.0-rc.1",
             "1.0.1-rc.1",
+            "1.0.0-alpha+x",
         ] {
             let bytes = linear_with(layout, &requirement);
             assert_eq!(
@@ -2311,6 +2364,141 @@ pub(crate) mod tests {
             Model::from_bytes(&linear_with("2.0.0", ">=99")),
             Err(ModelError::IncompatibleLayout)
         );
+    }
+
+    #[test]
+    fn reads_the_metadata_of_a_model_of_another_fingerprint() {
+        let requirement = VersionReq::caret(&crate::VERSION).to_string();
+        let layers = |dimensions: &[usize]| -> Vec<RawLayer> {
+            dimensions
+                .windows(2)
+                .map(|pair| RawLayer {
+                    shift: 1,
+                    bias: vec![0; pair[1]],
+                    multiplier: vec![0; pair[1]],
+                    weights: vec![0; pair[0] * pair[1]],
+                })
+                .collect()
+        };
+        for dimensions in [
+            [FINGERPRINT_LEN + 8, Category::COUNT],
+            [FINGERPRINT_LEN, Category::COUNT + 1],
+            [1, 1],
+        ] {
+            let future = encode_with(
+                &dimensions,
+                &layers(&dimensions),
+                Some(("2.0.0", &requirement)),
+            );
+            let metadata = Metadata::read(&future).unwrap();
+            assert_eq!(metadata.layout_version(), &Version::new(2, 0, 0));
+            assert_eq!(
+                Model::from_bytes(&future),
+                Err(ModelError::IncompatibleLayout)
+            );
+            let same = encode_with(
+                &dimensions,
+                &layers(&dimensions),
+                Some(("1.0.0", &requirement)),
+            );
+            assert!(Metadata::read(&same).unwrap().check().is_ok());
+            assert_eq!(Model::from_bytes(&same), Err(ModelError::InvalidDimensions));
+        }
+        // The largest dimensions give a length that no slice reaches.
+        let mut bytes = linear(|_| {});
+        let at = 8 + Metadata::current().encoded_len();
+        bytes[at..at + 4].fill(0xFF);
+        reseal(&mut bytes);
+        assert_eq!(Model::from_bytes(&bytes), Err(ModelError::Truncated));
+    }
+
+    #[test]
+    fn a_new_requirement_replaces_one_that_this_crate_does_not_match() {
+        let mut rng = Rng::new(52);
+        let dimensions = [FINGERPRINT_LEN, 3, Category::COUNT];
+        let layers = random_layers(&mut rng, &dimensions);
+        let old = encode_with(&dimensions, &layers, Some(("1.0.0", "=0.0.1")));
+        assert_eq!(Model::from_bytes(&old), Err(ModelError::UnsupportedLibrary));
+        let current = VersionReq::caret(&crate::VERSION);
+        let model = Model::from_bytes_with_library_requirement(&old, current.clone()).unwrap();
+        assert_eq!(model.library_requirement(), &current);
+        assert_eq!(model.to_bytes(), encode(&dimensions, &layers));
+        assert_eq!(
+            Model::from_bytes_with_library_requirement(&old, ">=99".parse().unwrap()),
+            Err(ModelError::UnsupportedLibrary)
+        );
+        let future = encode_with(&dimensions, &layers, Some(("2.0.0", "=0.0.1")));
+        assert_eq!(
+            Model::from_bytes_with_library_requirement(&future, current.clone()),
+            Err(ModelError::IncompatibleLayout)
+        );
+        // A model of format 1 takes a new requirement too.
+        let legacy = encode_with(&dimensions, &layers, None);
+        let restated: VersionReq = format!(">={}, <99", crate::VERSION).parse().unwrap();
+        let model = Model::from_bytes_with_library_requirement(&legacy, restated.clone()).unwrap();
+        assert_eq!(model.library_requirement(), &restated);
+        for embedded in EmbeddedModel::ALL {
+            let model =
+                Model::from_bytes_with_library_requirement(embedded.bytes(), current.clone());
+            assert_eq!(
+                model.map(|model| model.layer_count()),
+                Ok(embedded.load().layer_count())
+            );
+        }
+    }
+
+    /// Writes random texts of the metadata alphabet into a valid model with
+    /// a correct checksum, so that parsing reaches the metadata.
+    #[test]
+    fn arbitrary_metadata_never_panics_and_round_trips() {
+        const ALPHABET: &[u8] = b"0123456789.-+*^~=<>, abxXz\t\xFF";
+        let mut rng = Rng::new(53);
+        let mut accepted = 0;
+        let weights = vec![0u8; Category::COUNT * (8 + FINGERPRINT_LEN)];
+        let current = VersionReq::caret(&crate::VERSION).to_string();
+        for round in 0..20_000 {
+            let mut text = |max: u32| -> Vec<u8> {
+                let len = rng.next_u32() % max;
+                (0..len)
+                    .map(|_| ALPHABET[rng.next_u32() as usize % ALPHABET.len()])
+                    .collect()
+            };
+            let (mut layout, mut requirement) = (text(12), text(24));
+            // Keep one text valid in some rounds, so that the other is
+            // parsed and checked too.
+            match round % 3 {
+                0 => layout = b"1.0.0".to_vec(),
+                1 => requirement = current.as_bytes().to_vec(),
+                _ => {}
+            }
+            if round % 100 == 0 {
+                (layout, requirement) = (b"1.2.3+x".to_vec(), current.as_bytes().to_vec());
+            }
+            let mut bytes = MAGIC.to_vec();
+            bytes.extend(FORMAT_VERSION.to_le_bytes());
+            bytes.extend([1, 0]);
+            for text in [&layout, &requirement] {
+                bytes.push(u8::try_from(text.len()).unwrap());
+                bytes.extend(text);
+            }
+            bytes.extend(u16::try_from(FINGERPRINT_LEN).unwrap().to_le_bytes());
+            bytes.extend(u16::try_from(Category::COUNT).unwrap().to_le_bytes());
+            bytes.extend([1, 0, 0, 0]);
+            bytes.extend(&weights);
+            seal(&mut bytes);
+            let read = Metadata::read(&bytes);
+            match Model::from_bytes(&bytes) {
+                Ok(model) => {
+                    accepted += 1;
+                    assert_eq!(model.to_bytes(), bytes);
+                    assert_eq!(read.as_ref(), Ok(model.metadata()));
+                }
+                Err(error) => {
+                    assert!(read.is_err() || read.unwrap().check() == Err(error));
+                }
+            }
+        }
+        assert!(accepted > 0);
     }
 
     #[test]

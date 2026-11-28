@@ -33,8 +33,9 @@
 //! `CATEGORY` is a category name or `all`.
 //!
 //! `--library-requirement REQ` states the versions of the library that may
-//! load the model, such as `>=0.1.0-dev, <0.3`, in place of `^` the version
-//! that trains it. The library that trains the model must match it.
+//! load the model, such as `>=0.1.0-dev, <0.3`, which admits this
+//! pre-release and the releases below 0.3, in place of `^` the version that
+//! trains it. The library that trains the model must match it.
 //!
 //! The model is written to `MODEL` in the format that `Model::from_bytes`
 //! reads, with the layout version of the library and the library

@@ -71,6 +71,25 @@ versions of a model and whether the library loads it:
 target/release/examples/model_info "$WORK/out/default.s2fp"
 ```
 
+`build_models.py` extracts the features of a split again when their metadata
+differs from what the current library writes. A requirement on a pre-release
+of the library matches only that pre-release and the releases it names:
+`^0.1.0-dev` matches neither `0.1.1-dev` nor `0.2.0`, and the example above
+does not match `0.2.0-dev`. When the version in `Cargo.toml` changes and the
+new version still gives the same scores, state a new requirement for each
+embedded model, and for other models that should keep loading, without
+retraining:
+
+```sh
+for model in compact default large strict; do
+  target/release/examples/model_info --library-requirement "^NEW_VERSION" \
+    --out "$WORK/$model.s2fp" "$model" && cp "$WORK/$model.s2fp" models/
+done
+```
+
+The tests check that every embedded model loads and matches its golden
+vectors.
+
 Every step is deterministic for its seed on one machine. Floating-point
 training can round differently on another CPU or NumPy build, so a rerun
 elsewhere gives a model with close but not identical parameters.
