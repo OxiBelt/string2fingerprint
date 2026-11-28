@@ -114,6 +114,23 @@ jobs:
       - name: Check the detected kernel backends with the self-test example
         run: cargo run --all-features --locked --example kernel_self_test
 
+      - name: Check that the Tokio example decides like the synchronous one
+        # `bash` runs with `pipefail`. The last line is longer than the
+        # inline limit, so `detect_async` decides it on the blocking pool.
+        shell: bash
+        run: |
+          {
+            grep -v -e '^#' -e '^$' tests/data/attacks.tsv | cut -f2-
+            cat tests/data/benign.txt
+            python3 -c 'print("a" * 200000 + "<script>alert(1)</script>")'
+          } > lines.txt
+          for preset in fast balanced thorough strict; do
+            cargo run --all-features --locked --example detect "$preset" < lines.txt > sync.txt
+            cargo run --all-features --locked --example detect_async "$preset" < lines.txt > async.txt
+            cmp sync.txt async.txt
+          done
+          rm lines.txt sync.txt async.txt
+
       - name: Run the benchmark as a smoke test
         run: cargo test --all-features --locked --bench score
 

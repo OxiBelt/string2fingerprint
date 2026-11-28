@@ -153,6 +153,8 @@ jobs:
             features: train
           - name: build
             features: build
+          - name: tokio
+            features: tokio
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -179,3 +181,34 @@ jobs:
           FEATURES: ${{ matrix.features }}
           RUSTDOCFLAGS: -D warnings
         run: cargo doc --no-deps --locked --features "$FEATURES"
+
+  # Cargo.lock may hold a newer Tokio than the lower bound that `Cargo.toml`
+  # declares, so the other jobs do not show that the bound still builds and
+  # passes. This job tests the `tokio` feature with exactly that release.
+  tokio-floor:
+    name: Tokio lower bound
+    runs-on: ubuntu-26.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install pinned Rust
+        run: |
+          rustup toolchain install --no-self-update
+          rustc --version --verbose
+
+      - name: Select the release of the declared lower bound
+        run: |
+          bound="$(sed -n 's/^tokio = { version = "\([0-9]*\.[0-9]*\.[0-9]*\)".*/\1/p' Cargo.toml | sort -u)"
+          if [[ ! "$bound" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Cargo.toml declares no single Tokio version: $bound" >&2
+            exit 1
+          fi
+          cargo update --package tokio --precise "$bound"
+          cargo tree --locked --features tokio --invert tokio --depth 0
+
+      - name: Run tests
+        run: cargo test --locked --features tokio
