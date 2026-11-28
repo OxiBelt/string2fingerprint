@@ -299,12 +299,17 @@ struct Histograms {
 /// samples have each score. It does not depend on a threshold, so every
 /// threshold can be evaluated after the samples are recorded. Memory is fixed
 /// at about 53 KB on the heap, whatever the number of samples, and counts
-/// saturate at `u64::MAX` instead of overflowing.
+/// saturate at `u64::MAX` instead of overflowing. Rates and thresholds no
+/// longer describe the samples once a count has saturated, which takes
+/// 2^64 samples.
 #[derive(Clone, PartialEq, Eq)]
 pub struct Evaluation {
     histograms: Box<Histograms>,
     samples: u64,
     benign_samples: u64,
+    /// Whether samples with labels are never negatives, as
+    /// [`Evaluation::benign_negatives`] describes.
+    benign_only: bool,
 }
 
 impl Default for Evaluation {
@@ -319,6 +324,7 @@ impl fmt::Debug for Evaluation {
         f.debug_struct("Evaluation")
             .field("samples", &self.samples)
             .field("benign_samples", &self.benign_samples)
+            .field("benign_negatives", &self.benign_only)
             .finish_non_exhaustive()
     }
 }
@@ -337,6 +343,7 @@ impl Evaluation {
             }),
             samples: 0,
             benign_samples: 0,
+            benign_only: false,
         }
     }
 
@@ -349,6 +356,8 @@ impl Evaluation {
                 &mut histograms.positives[index]
             } else if labels.is_empty() {
                 &mut histograms.benign[index]
+            } else if self.benign_only {
+                continue;
             } else {
                 &mut histograms.others[index]
             };
@@ -365,6 +374,10 @@ impl Evaluation {
     }
 
     /// Adds the samples of `other`, saturating at `u64::MAX`.
+    ///
+    /// When either evaluation counts only the samples without labels as
+    /// negatives, the result does too, as [`Evaluation::benign_negatives`]
+    /// describes.
     pub fn merge(&mut self, other: &Self) {
         let (histograms, other_histograms) = (&mut *self.histograms, &*other.histograms);
         let pairs = histograms
@@ -384,6 +397,10 @@ impl Evaluation {
         }
         self.samples = self.samples.saturating_add(other.samples);
         self.benign_samples = self.benign_samples.saturating_add(other.benign_samples);
+        self.benign_only |= other.benign_only;
+        if self.benign_only {
+            self.histograms.others = [EMPTY_HISTOGRAM; Category::COUNT];
+        }
     }
 
     /// Returns the number of samples recorded.
@@ -406,10 +423,14 @@ impl Evaluation {
     /// categories, in [`Evaluation::samples`], and in
     /// [`Evaluation::any_confusion`]. Use it when a flag in the wrong attack
     /// category is not a false positive.
+    ///
+    /// The copy keeps this rule for the samples recorded into it or merged
+    /// with it later.
     #[must_use]
     pub fn benign_negatives(&self) -> Self {
         let mut evaluation = self.clone();
         evaluation.histograms.others = [EMPTY_HISTOGRAM; Category::COUNT];
+        evaluation.benign_only = true;
         evaluation
     }
 
@@ -540,6 +561,15 @@ impl Evaluation {
                 if !valid(false_positive) || !valid(false_negative) || curve[0].total() == 0 {
                     return None;
                 }
+                // Costs so large that a total would overflow are scaled by
+                // a power of two, which keeps their order and their ties.
+                let total = curve[0].total() as f64;
+                let mut scale = 1.0;
+                while !(false_positive.max(false_negative) * scale * total * 2.0).is_finite() {
+                    scale *= 0.5;
+                }
+                let (false_positive, false_negative) =
+                    (false_positive * scale, false_negative * scale);
                 let costs = curve.map(|confusion| confusion.cost(false_positive, false_negative));
                 let least = costs.iter().copied().fold(f64::INFINITY, f64::min);
                 let tied = costs.iter().filter(|&&cost| cost == least).count();
@@ -1142,6 +1172,71 @@ mod tests {
     }
 
     #[test]
+    fn huge_costs_choose_the_threshold_of_their_ratio() {
+        let category = Category::SqlInjection;
+        let sql = |score| Scores::from_array([0, 0, score, 0, 0, 0, 0, 0]);
+        let mut evaluation = Evaluation::new();
+        for _ in 0..2 {
+            evaluation.record(sql(50), category.into());
+            evaluation.record(sql(200), CategorySet::EMPTY);
+        }
+        let cost = |false_positive, false_negative| {
+            evaluation.threshold(
+                category,
+                Objective::MinCost {
+                    false_positive,
+                    false_negative,
+                },
+            )
+        };
+        let even = cost(1.0, 1.0);
+        let confusion = evaluation.confusion(category, even.unwrap());
+        assert_eq!(confusion.false_positives + confusion.false_negatives, 2);
+        for huge in [f64::MAX, 1e308, 1e300, f64::MAX / 3.0] {
+            assert_eq!(cost(huge, huge), even, "{huge}");
+        }
+        // Only the order of the costs matters here: thresholds above 200
+        // flag no negative, and those up to 50 miss no positive.
+        assert_eq!(cost(f64::MAX, 1.0), cost(1e6, 1.0));
+        assert_eq!(cost(f64::MAX, 1.0), cost(1e300, 1e-8));
+        assert!(cost(f64::MAX, 1.0).unwrap() > Threshold::at(200));
+        assert_eq!(cost(1.0, f64::MAX), cost(1.0, 1e6));
+        assert!(cost(1.0, f64::MAX).unwrap() <= Threshold::at(50));
+    }
+
+    #[test]
+    fn a_benign_negatives_copy_keeps_its_rule() {
+        let category = Category::Malformed;
+        let malformed = Scores::from_array([90, 0, 0, 0, 0, 0, 0, 0]);
+        let mut evaluation = Evaluation::new();
+        evaluation.record(malformed, CategorySet::EMPTY);
+        evaluation.record(malformed, Category::SqlInjection.into());
+        let mut view = evaluation.benign_negatives();
+        assert_eq!(view.confusion(category, Threshold::at(1)).negatives(), 1);
+
+        // A sample with other labels is still not a negative of the view.
+        view.record(malformed, Category::PathTraversal.into());
+        let confusion = view.confusion(category, Threshold::at(1));
+        assert_eq!((confusion.negatives(), confusion.false_positives), (1, 1));
+        assert_eq!(view.samples(), 3);
+        view.merge(&evaluation);
+        assert_eq!(view.confusion(category, Threshold::at(1)).negatives(), 2);
+        assert_eq!(view.samples(), 5);
+
+        // Merging a view gives a view.
+        let mut full = evaluation.clone();
+        assert_eq!(full.confusion(category, Threshold::at(1)).negatives(), 2);
+        full.merge(&view);
+        assert_eq!(full, {
+            let mut expected = evaluation.benign_negatives();
+            expected.merge(&view);
+            expected
+        });
+        assert_eq!(full.confusion(category, Threshold::at(1)).negatives(), 3);
+        assert_eq!(view.benign_negatives(), view);
+    }
+
+    #[test]
     fn thresholds_keep_the_fallback_where_undefined() {
         let mut evaluation = Evaluation::new();
         evaluation.record(
@@ -1233,12 +1328,13 @@ mod tests {
         samples: &[Sample],
         category: Category,
         objective: Objective,
+        benign_negatives: bool,
     ) -> Option<Threshold> {
         let curve: Vec<(Threshold, Confusion)> = Threshold::all()
             .map(|threshold| {
                 (
                     threshold,
-                    naive_confusion(samples, category, threshold, false),
+                    naive_confusion(samples, category, threshold, benign_negatives),
                 )
             })
             .collect();
@@ -1338,8 +1434,13 @@ mod tests {
                 for objective in objectives {
                     assert_eq!(
                         evaluation.threshold(category, objective),
-                        naive_threshold(&samples, category, objective),
+                        naive_threshold(&samples, category, objective, false),
                         "round {round}, {category}, {objective:?}"
+                    );
+                    assert_eq!(
+                        benign.threshold(category, objective),
+                        naive_threshold(&samples, category, objective, true),
+                        "round {round}, {category}, {objective:?}, benign negatives"
                     );
                 }
             }
@@ -1403,7 +1504,7 @@ mod tests {
         assert_ne!(left, all);
         assert_eq!(
             format!("{:?}", Evaluation::new()),
-            "Evaluation { samples: 0, benign_samples: 0, .. }"
+            "Evaluation { samples: 0, benign_samples: 0, benign_negatives: false, .. }"
         );
     }
 
