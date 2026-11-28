@@ -61,13 +61,13 @@ run() {
     "$image" "$@"
 }
 
-# Runs a command in a container with empty standard input, and checks its
-# exit status and that it did not panic.
+# Runs a command in a container, with standard input from `$stdin` or
+# empty, and checks its exit status and that it did not panic.
 expect_status() {
   local expected="$1" what="$2"
   shift 2
   local status=0
-  run "$@" < /dev/null > "$work/failure.out" 2> "$work/failure.err" || status=$?
+  run "$@" < "${stdin:-/dev/null}" > "$work/failure.out" 2> "$work/failure.err" || status=$?
   if [[ "$status" -ne "$expected" ]]; then
     fail "$what exited with status $status, not $expected"
   elif grep -q 'panicked' "$work/failure.err"; then
@@ -146,6 +146,9 @@ lines.append(random_bytes(1 << 20).replace(b"\n", b"\t"))
 with open(path, "wb") as out:
     # The last line has no line feed.
     out.write(b"\n".join(lines))
+# Bytes in place of a model file, the same on every run.
+with open(path + "_model", "wb") as out:
+    out.write(random_bytes(4096))
 PYTHON
 inputs=(attacks benign hostile)
 for input in "${inputs[@]}"; do
@@ -226,12 +229,17 @@ if run sh -c "
   train --benign $data/benign.txt --labeled $data/attacks.tsv $settings --threads 1 --out /tmp/one.s2fp 2> /dev/null
   train --benign $data/benign.txt --labeled $data/attacks.tsv $settings --threads 4 --out /tmp/four.s2fp 2> /dev/null
   cmp /tmp/one.s2fp /tmp/four.s2fp
-  score /tmp/one.s2fp | tail -n +2
+  score /tmp/one.s2fp > /tmp/scores.txt
+  tail -n +2 /tmp/scores.txt
   echo \"# model \$(sha256sum < /tmp/one.s2fp | cut -d' ' -f1)\"
 " < "$work/input_attacks" > "$work/trained.txt"; then
   record "trained" "$work/trained.txt"
   flagged="$(flagged_rows "$work/trained.txt")"
-  if ((flagged * 2 >= attacks)); then
+  # The column header and the model digest, besides one row a line.
+  rows="$(($(wc -l < "$work/trained.txt") - 2))"
+  if [[ "$rows" -ne "$attacks" ]]; then
+    fail "the trained model wrote $rows rows for $attacks lines of attacks input"
+  elif ((flagged * 2 >= attacks)); then
     pass "the trained model is the same with 1 and 4 threads and flags $flagged of $attacks attacks"
   else
     fail "the trained model flags only $flagged of $attacks attacks"
@@ -258,11 +266,16 @@ expect_status 2 "train without --out" train --benign "$data/benign.txt"
 expect_status 1 "train with a missing file" train --benign /tmp/missing --out /tmp/model.s2fp
 expect_status 2 "score with two arguments" score default extra
 expect_status 1 "score with a missing model file" score /tmp/missing
-expect_status 1 "score with a model file of random bytes" \
-  sh -c 'head -c 4096 /dev/urandom > /tmp/bad.s2fp && score /tmp/bad.s2fp'
+stdin="$work/input_hostile_model" expect_status 1 "score with a model file of random bytes" \
+  sh -c 'cat > /tmp/bad.s2fp && score /tmp/bad.s2fp'
 expect_status 1 "score with a text file as the model" score "$data/benign.txt"
+expect_status 1 "score with a truncated model file" sh -c "
+  train --benign $data/benign.txt --labeled $data/attacks.tsv $settings --out /tmp/model.s2fp 2> /dev/null
+  head -c 1000 /tmp/model.s2fp > /tmp/truncated.s2fp
+  score /tmp/truncated.s2fp
+"
 
-if grep -lF "$marker" "$work"/downstream_* "$work"/score_* "$work/trained.txt" > /dev/null 2>&1; then
+if grep -qsF "$marker" "$work"/downstream_* "$work"/score_* "$work/trained.txt"; then
   fail "an output contains input bytes"
 else
   pass "no output contains input bytes"
