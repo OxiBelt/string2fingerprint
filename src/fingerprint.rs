@@ -64,17 +64,18 @@ pub const MAX_COUNT: usize = COUNT_CAP as usize;
 /// follows Semantic Versioning:
 ///
 /// - The major number changes when any input can get a different
-///   fingerprint. Models of another major number are refused, because every
-///   model must be retrained.
-/// - The minor number changes when features are added that every earlier
-///   model can ignore, because they were zero in every fingerprint that the
-///   earlier layout extracted.
+///   fingerprint, including a change of [`FINGERPRINT_LEN`]. Models of
+///   another major number are refused, because every model must be
+///   retrained.
+/// - The minor number changes when the layout gains a part that callers
+///   can use, such as a new public table, and no fingerprint changes.
 /// - The patch number changes when the layout is documented or implemented
-///   differently but no fingerprint changes.
+///   differently and no fingerprint changes.
 ///
-/// A model of layout `m` loads where this version matches the requirement
-/// `^m`, as [`VersionReq::caret`](crate::version::VersionReq::caret) defines
-/// it, so a model never loads with a layout older than its own.
+/// A model of layout `m` is compatible when `m` has the major number of
+/// this version and no pre-release, since a minor or patch change keeps
+/// every fingerprint. The version is 1.0.0 or above and has no pre-release
+/// itself.
 pub const LAYOUT_VERSION: crate::version::Version = crate::version::Version::new(1, 0, 0);
 
 /// First bucket and bucket count of lexical bigrams with a non-alphanumeric
