@@ -43,18 +43,17 @@ changes any of them:
 | `fast` | `compact` | 128 | 97.2% | 1.24% |
 | `balanced` | `default` | 128 | 98.1% | 1.19% |
 | `thorough` | `large` | 128 | 98.5% | 1.04% |
-| `blocking` | `strict` | 192 | 96.7% | 0.29% |
+| `strict` | `strict` | 192 | 96.7% | 0.29% |
 
 The rates are the shares of attack and benign samples of the synthetic test
-split of the [training tools](tools/train/README.md) that are flagged in any
-category. Measure on your own traffic before you act on a decision.
+split that are flagged in any category, which the
+[training tools](tools/train/README.md#every-model) record. Measure on your own traffic before you act on a decision.
 
 ```rust
-use string2fingerprint::detect::Preset;
-use string2fingerprint::{Category, Detector, Threshold};
+use string2fingerprint::{Category, Detector, Preset, Threshold};
 
 let detector = Detector::builder()
-    .preset(Preset::Blocking)
+    .preset(Preset::Strict)
     .category(Category::CommandInjection, Threshold::at(230))
     .disable(Category::Malformed)
     .build()?;
@@ -75,15 +74,15 @@ for (category, score) in scores.iter() {
 }
 ```
 
-Both score more than one buffer in the same ways:
+Both score more than one buffer:
 
-| Call | Scores |
-| --- | --- |
-| `score_fields` / `detect_fields` | The fields of one message, each on its own, combined by the highest score. |
-| `score_batch`, `score_parallel` | Many inputs, on one thread or several. |
-| `score_reader` | A reader to its end, with a buffer on the stack. |
-| `stream` | An input that arrives in parts, as `ScoreStream` or `DetectionStream`. |
-| `windows` | Each window of a long input, with the bytes it covers. |
+| `Scorer` | `Detector` | Scores |
+| --- | --- | --- |
+| `score_fields` | `detect_fields` | The fields of one message, each on its own, combined by the highest score. |
+| `score_batch`, `score_parallel` | `detect_batch`, `detect_parallel` | Many inputs, on one thread or several. |
+| `score_reader` | `detect_reader` | A reader to its end, with a buffer on the stack. Bound an untrusted reader with `Read::take`. |
+| `stream` | `stream` | An input that arrives in parts, as a `ScoreStream` or a `DetectionStream`. |
+| `windows` | | Each window of a long input, with the bytes it covers. |
 
 A stream gives the same result as the whole input however the input is
 split, and its scores so far never decrease, so a proxy can stop reading a
@@ -173,7 +172,7 @@ measure throughput for each backend that the CPU supports:
 ```sh
 cargo run --release --example score < lines.txt
 cargo run --release --example score large < lines.txt
-cargo run --release --example detect blocking < lines.txt
+cargo run --release --example detect strict < lines.txt
 cargo bench
 ```
 

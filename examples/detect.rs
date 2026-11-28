@@ -1,7 +1,7 @@
 //! Decides each line of standard input and prints one row per line.
 //!
 //! Usage: `detect [PRESET]`. `PRESET` is `fast`, `balanced`, `thorough`, or
-//! `blocking`, and `balanced` without it. Each output row holds the flagged
+//! `strict`, and `balanced` without it. Each output row holds the flagged
 //! categories, separated by commas, or `benign`, then a tab and the highest
 //! score. Lines are scored as raw bytes without their terminator, which is
 //! a line feed or a carriage return and a line feed. Input bytes are never
@@ -11,8 +11,7 @@ use std::env;
 use std::io::{self, BufRead, Write};
 use std::process::ExitCode;
 
-use string2fingerprint::Detector;
-use string2fingerprint::detect::Preset;
+use string2fingerprint::{Detector, Preset};
 
 fn run(detector: &Detector) -> io::Result<()> {
     let mut out = io::BufWriter::new(io::stdout().lock());

@@ -4,7 +4,7 @@
 use std::io::Write as _;
 use std::sync::Arc;
 
-use string2fingerprint::detect::{DetectionStream, DetectorBuilder};
+use string2fingerprint::DetectorBuilder;
 use string2fingerprint::fingerprint::{
     self, FINGERPRINT_LEN, Fingerprint, Fingerprinter, Section, feature_value,
 };

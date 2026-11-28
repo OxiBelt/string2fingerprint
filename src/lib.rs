@@ -20,7 +20,7 @@
 //!
 //! The high-level interface decides inputs in one call. A [`Detector`]
 //! pairs a model with a threshold for each category, from a
-//! [`Preset`](detect::Preset) or a [`DetectorBuilder`](detect::DetectorBuilder),
+//! [`Preset`] or a [`DetectorBuilder`],
 //! and returns a [`Detection`]:
 //!
 //! ```
