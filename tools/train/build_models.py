@@ -29,6 +29,7 @@ import json
 import shutil
 import subprocess
 import sys
+import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -55,12 +56,26 @@ def build_examples() -> Path:
     return ROOT / "target" / "release" / "examples"
 
 
+def current_metadata(examples: Path) -> str:
+    """Return the `.x.meta` text that `fingerprint_corpus` writes for this library."""
+    with tempfile.TemporaryDirectory() as directory:
+        empty = Path(directory) / "empty.bin"
+        empty.write_bytes(b"")
+        features = Path(directory) / "empty.x"
+        subprocess.run([str(examples / "fingerprint_corpus"), str(empty), str(features), str(features.with_suffix(".y"))],
+                       check=True, stdout=subprocess.DEVNULL)
+        return Path(f"{features}.meta").read_text()
+
+
 def make_split(work: Path, name: str, split: dict, join_rate: float, examples: Path, force: bool) -> None:
     corpus = work / f"{name}.bin"
     if force or not corpus.exists():
         run([sys.executable, "-B", str(HERE / "dataset.py"), "--seed", str(split["seed"]), "--count", str(split["count"]),
              "--join-rate", str(join_rate), "--out", str(corpus)])
-    if force or not (work / f"{name}.x").exists():
+    # Features without metadata, or extracted by another layout or version of
+    # the library, are extracted again.
+    meta = work / f"{name}.x.meta"
+    if force or not (work / f"{name}.x").exists() or not meta.exists() or meta.read_text() != current_metadata(examples):
         run([str(examples / "fingerprint_corpus"), str(corpus), str(work / f"{name}.x"), str(work / f"{name}.y")])
 
 

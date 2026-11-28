@@ -7,6 +7,10 @@ fingerprints, quantizes it to that arithmetic, evaluates the quantized
 network with an exact integer simulation, and writes the model in the `S2FP`
 format together with golden vectors that the Rust tests replay.
 
+The model records the fingerprint layout version and the library requirement
+that `fingerprint_corpus` wrote to `train.x.meta` next to the features. The
+features of every split must come from the same layout.
+
 Only NumPy is required. See `README.md` in this directory for the procedure.
 """
 
@@ -15,6 +19,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import re
 import struct
 import sys
 from dataclasses import dataclass
@@ -33,7 +38,11 @@ CATEGORIES = (
     "template_injection",
     "header_injection",
 )
-FORMAT_VERSION = 1
+FORMAT_VERSION = 2
+# Bounds of the two metadata texts, `MAX_VERSION_LEN` and
+# `MAX_REQUIREMENT_LEN` in `src/version.rs`.
+MAX_VERSION_LEN = 64
+MAX_REQUIREMENT_LEN = 255
 MAX_SHIFT = 62
 # The output layer stores logits in units of 1/16, clamped to -128..=127.
 LOGIT_SCALE = 16.0
@@ -41,6 +50,49 @@ LOGISTIC = np.array(
     [round(255 / (1 + math.exp(-(index - 128) / LOGIT_SCALE))) for index in range(256)],
     dtype=np.uint8,
 )
+
+
+# The canonical texts that `src/version.rs` writes: a Semantic Versioning
+# 2.0.0 version, and a requirement of at most 32 comparators separated by
+# `, `, each with its operator written out, or a wildcard.
+_NUMBER = r"(?:0|[1-9][0-9]*)"
+_IDENTIFIER = r"(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)"
+_PRE = rf"{_IDENTIFIER}(?:\.{_IDENTIFIER})*"
+_BUILD = r"[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*"
+VERSION_PATTERN = re.compile(rf"{_NUMBER}\.{_NUMBER}\.{_NUMBER}(?:-{_PRE})?(?:\+{_BUILD})?")
+_COMPARATOR = (
+    rf"(?:(?:=|>=|>|<=|<|~|\^){_NUMBER}(?:\.{_NUMBER}(?:\.{_NUMBER}(?:-{_PRE})?)?)?"
+    rf"|{_NUMBER}\.\*|{_NUMBER}\.{_NUMBER}\.\*)"
+)
+REQUIREMENT_PATTERN = re.compile(rf"\*|{_COMPARATOR}(?:, {_COMPARATOR}){{0,31}}")
+
+
+@dataclass(frozen=True)
+class Metadata:
+    """The texts that a model records before its dimensions."""
+
+    layout_version: str
+    library_requirement: str
+
+    def __post_init__(self) -> None:
+        for text, limit, pattern in (
+            (self.layout_version, MAX_VERSION_LEN, VERSION_PATTERN),
+            (self.library_requirement, MAX_REQUIREMENT_LEN, REQUIREMENT_PATTERN),
+        ):
+            if not 1 <= len(text) <= limit or not pattern.fullmatch(text):
+                raise ValueError(f"{text!r} is not a version or requirement in canonical form of at most {limit} bytes")
+
+
+def load_metadata(prefix: Path) -> Metadata:
+    """Read the `.x.meta` file that `fingerprint_corpus` writes next to the features."""
+    values = {}
+    for line in Path(f"{prefix}.x.meta").read_text(encoding="ascii").splitlines():
+        key, _, value = line.partition(" ")
+        values[key] = value
+    try:
+        return Metadata(values["layout_version"], values["library_requirement"])
+    except KeyError as error:
+        raise ValueError(f"{prefix}.x.meta: missing {error.args[0]}") from None
 
 
 def load_split(prefix: Path) -> tuple[np.ndarray, np.ndarray]:
@@ -271,11 +323,13 @@ def infer(layers: list[QuantizedLayer], features: np.ndarray) -> np.ndarray:
     raise ValueError("model has no layers")
 
 
-def encode(layers: list[QuantizedLayer]) -> bytes:
+def encode(layers: list[QuantizedLayer], metadata: Metadata) -> bytes:
     """Serialize in the `S2FP` format documented in `src/model.rs`."""
     dimensions = [layers[0].weights.shape[1]] + [layer.weights.shape[0] for layer in layers]
     out = bytearray(b"S2FP")
     out += struct.pack("<HBB", FORMAT_VERSION, len(layers), 0)
+    for text in (metadata.layout_version, metadata.library_requirement):
+        out += struct.pack("<B", len(text)) + text.encode("ascii")
     out += struct.pack(f"<{len(dimensions)}H", *dimensions)
     for layer in layers:
         out += struct.pack("<B3x", layer.shift)
@@ -352,10 +406,30 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--golden", type=int, default=64, help="number of golden vectors")
     parser.add_argument("--name", default="default", help="base name of the output files")
     parser.add_argument("--seed", type=int, default=1)
+    parser.add_argument(
+        "--library-requirement",
+        help="versions of the library that may load the model, in canonical form; "
+        "by default the one in train.x.meta",
+    )
     arguments = parser.parse_args(argv)
 
     def log(message: str) -> None:
         print(message, file=sys.stderr, flush=True)
+
+    try:
+        metadata = load_metadata(arguments.data / "train")
+        others = {split: load_metadata(arguments.data / split) for split in ("val", "test")}
+    except (OSError, ValueError) as error:
+        parser.error(f"{error}; extract the features again with fingerprint_corpus")
+    if arguments.library_requirement is not None:
+        try:
+            metadata = Metadata(metadata.layout_version, arguments.library_requirement)
+        except ValueError as error:
+            parser.error(f"--library-requirement: {error}")
+    for split, other in others.items():
+        if other.layout_version != metadata.layout_version:
+            parser.error(f"the {split} split has layout {other.layout_version}, train has {metadata.layout_version}")
+    log(f"layout {metadata.layout_version}, library {metadata.library_requirement}")
 
     rng = np.random.default_rng(arguments.seed)
     train_features, train_labels = load_split(arguments.data / "train")
@@ -387,6 +461,8 @@ def main(argv: list[str]) -> int:
     drift = np.abs(validation_scores.astype(np.float64) - float_scores)
     report = {
         "dimensions": dimensions,
+        "layout_version": metadata.layout_version,
+        "library_requirement": metadata.library_requirement,
         "arguments": {
             key: (str(value) if isinstance(value, Path) else value)
             for key, value in vars(arguments).items()
@@ -400,7 +476,7 @@ def main(argv: list[str]) -> int:
     }
 
     arguments.out.mkdir(parents=True, exist_ok=True)
-    encoded = encode(layers)
+    encoded = encode(layers, metadata)
     (arguments.out / f"{arguments.name}.s2fp").write_bytes(encoded)
     golden_rows = rng.choice(len(test_features), size=arguments.golden, replace=False)
     golden = bytearray()
