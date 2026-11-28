@@ -57,6 +57,11 @@ jobs:
       - name: Run Clippy without optional features
         run: cargo clippy --all-targets --locked -- -D warnings
 
+      - name: Check the dependent crate with rustfmt and Clippy
+        run: |
+          cargo fmt --check --manifest-path tests/downstream/Cargo.toml
+          cargo clippy --all-targets --locked --manifest-path tests/downstream/Cargo.toml -- -D warnings
+
       - name: Check Rust documentation
         env:
           RUSTDOCFLAGS: -D warnings
@@ -111,3 +116,6 @@ jobs:
 
       - name: Run the benchmark as a smoke test
         run: cargo test --all-features --locked --bench score
+
+      - name: Train a model while compiling a dependent crate
+        run: cargo test --locked --manifest-path tests/downstream/Cargo.toml

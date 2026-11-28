@@ -20,6 +20,8 @@
 compile_error!("`string2fingerprint` supports Linux targets only");
 
 mod backend;
+#[cfg(feature = "build")]
+pub mod build;
 mod category;
 mod category_set;
 pub mod eval;
@@ -40,3 +42,58 @@ pub use category_set::{CategorySet, ParseCategorySetError};
 pub use scorer::Scorer;
 pub use scores::Scores;
 pub use thresholds::{Threshold, Thresholds};
+
+/// Loads the model `name` that the build script of the calling crate wrote
+/// to `OUT_DIR`, and returns the result of
+/// [`Model::from_bytes`](model::Model::from_bytes).
+///
+/// The bytes of the model become part of the compiled crate. The name is a
+/// string literal, the one given to `build::ModelBuild::new` of the `build`
+/// feature. This macro needs no feature. The calling crate must have a
+/// build script, because Cargo sets `OUT_DIR` only then.
+///
+/// ```ignore
+/// use string2fingerprint::Scorer;
+///
+/// let model = string2fingerprint::include_model!("waf").expect("the build script validated the model");
+/// let scorer = Scorer::with_model(model);
+/// ```
+#[macro_export]
+macro_rules! include_model {
+    ($name:literal) => {
+        $crate::model::Model::from_bytes(::core::include_bytes!(::core::concat!(
+            ::core::env!("OUT_DIR"),
+            "/",
+            $name,
+            ".s2fp"
+        )))
+    };
+}
+
+/// Loads the thresholds of the model `name` that the build script of the
+/// calling crate wrote to `OUT_DIR`, and returns the result of
+/// [`Thresholds::from_bytes`].
+///
+/// The build script writes thresholds when it calls
+/// `build::ModelBuild::calibrate` of the `build` feature. This macro needs
+/// no feature, and its value can initialize a constant:
+///
+/// ```ignore
+/// use string2fingerprint::Thresholds;
+///
+/// const THRESHOLDS: Thresholds = match string2fingerprint::include_thresholds!("waf") {
+///     Some(thresholds) => thresholds,
+///     None => panic!("the build script wrote valid thresholds"),
+/// };
+/// ```
+#[macro_export]
+macro_rules! include_thresholds {
+    ($name:literal) => {
+        $crate::Thresholds::from_bytes(::core::include_bytes!(::core::concat!(
+            ::core::env!("OUT_DIR"),
+            "/",
+            $name,
+            ".thresholds"
+        )))
+    };
+}

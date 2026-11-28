@@ -11,6 +11,9 @@ publish = false
 [features]
 # Training of models on labeled samples, in `string2fingerprint::train`.
 train = []
+# Training of a model in the build script of a dependent crate, in
+# `string2fingerprint::build`.
+build = ["train"]
 
 [lints.rust]
 unsafe_code = "deny"

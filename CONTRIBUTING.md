@@ -15,6 +15,7 @@ request notes. Run the commands in this guide from the repository root.
 | `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml` | Package metadata, dependency resolution, lints, and toolchain. | The crate, toolchain, lint policy, or dependencies change. |
 | `src/` | The Rust library. | Library code or crate-level documentation changes. |
 | `docs/` | The design document. | A contract or the specified behavior changes. |
+| `tests/downstream/` | A dependent crate that trains its model while it is compiled. | The `build` feature or the macros that embed a built model change. |
 | `tests/scripts/` | Markdown checker and regression tests. | Documentation validation changes. |
 | `.github/workflows/` | CI workflows. | Runners or CI checks change. |
 | `README.md` | Project status and contributor entry points. | Setup, usage, or the project overview changes. |
@@ -46,7 +47,13 @@ RUSTDOCFLAGS='-D warnings' cargo doc --all-features --no-deps --locked
 ```
 
 The second Clippy run checks the build without optional features, such as
-`train`.
+`train`. The crate in `tests/downstream/` checks the `build` feature from a
+dependent crate, with a lock file of its own:
+
+```sh
+cargo test --locked --manifest-path tests/downstream/Cargo.toml
+cargo clippy --all-targets --locked --manifest-path tests/downstream/Cargo.toml -- -D warnings
+```
 
 Use Python 3 for documentation checks and for the tests of the training
 tools. The tests that need NumPy are skipped without it:

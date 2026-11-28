@@ -182,6 +182,72 @@ Tune together with samples whose scores must stay, and compare the tuned
 model with the base on held-out samples. The training tools
 [measured both cases](tools/train/README.md#correcting-a-model).
 
+### Training While Compiling
+
+The `build` feature trains a model in the build script of your crate, from
+data files in the crate, and the crate embeds it. The model is trained again
+whenever a data file changes, and the compiled crate contains no training
+code. In `Cargo.toml`:
+
+```toml
+[dependencies]
+string2fingerprint = { git = "https://github.com/OxiBelt/string2fingerprint" }
+
+[build-dependencies]
+string2fingerprint = { git = "https://github.com/OxiBelt/string2fingerprint", features = ["build"] }
+
+# Cargo compiles build dependencies without optimization by default, which
+# makes training about 20 times slower.
+[profile.dev.package.string2fingerprint]
+opt-level = 3
+
+[profile.release.package.string2fingerprint]
+opt-level = 3
+```
+
+In `build.rs`:
+
+```rust
+use string2fingerprint::build::{ModelBuild, Source};
+use string2fingerprint::eval::Objective;
+use string2fingerprint::{Threshold, Thresholds};
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    ModelBuild::new("waf")
+        .train_on(Source::benign_lines("data/benign.txt"))
+        .train_on(Source::labeled_lines("data/attacks.tsv"))
+        // Choose thresholds on a tenth of the samples, held out of training.
+        .hold_out(0.1)
+        .calibrate(
+            Objective::MaxFalsePositiveRate(0.001),
+            Thresholds::uniform(Threshold::at(192)),
+        )
+        .run()?;
+    Ok(())
+}
+```
+
+In the crate:
+
+```rust
+use string2fingerprint::{Scorer, Thresholds};
+
+const THRESHOLDS: Thresholds = match string2fingerprint::include_thresholds!("waf") {
+    Some(thresholds) => thresholds,
+    None => panic!("the build script wrote valid thresholds"),
+};
+
+let model = string2fingerprint::include_model!("waf")?;
+let flagged = Scorer::with_model(model).score(input).flagged(&THRESHOLDS);
+```
+
+`ModelBuild::run` returns the evaluation on the held-out samples, so that
+the build script can fail the build when the model is not good enough. Set
+`STRING2FINGERPRINT_MODEL_WAF` to the path of a model file to build with that
+model in place of training. `tests/downstream/` is a complete example, and
+the [design document](docs/design.md#training-while-compiling) specifies the
+build.
+
 A model is only as good as its data. The embedded models were trained on
 600,000 generated samples, and a model trained on a few hundred samples knows
 those samples. The [design document](docs/design.md#training) specifies the

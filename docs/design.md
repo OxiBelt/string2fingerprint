@@ -289,6 +289,36 @@ and the result must be measured on held-out samples of both kinds. The
 [training tools](../tools/train/README.md#correcting-a-model) record a
 measurement of both effects.
 
+### Training While Compiling
+
+The `build` feature, which includes `train`, lets the build script of a
+dependent crate train its model from data files of that crate. The model is
+then trained again whenever a data file changes, and never at run time. The
+build script depends on the library with the feature, and the crate itself
+depends on it without the feature, so the compiled crate contains no
+training code.
+
+A build reads the files, trains or fine-tunes, and writes the model bytes to
+`<name>.s2fp` in the output directory that Cargo gives the build script. It
+can hold back a share of the samples, evaluate the model on them and on
+validation files, and write thresholds chosen on them to
+`<name>.thresholds` in the form of `Thresholds::to_bytes`. Two macros that
+need no feature embed both files in the dependent crate and validate them
+when they are loaded. Files are written only after everything else
+succeeded.
+
+The build tells Cargo to run it again when a data file or one of its
+environment variables changes. `STRING2FINGERPRINT_MODEL_<NAME>` names a
+model file that is validated and used in place of training, so that a crate
+can be built with a model trained elsewhere or without its data.
+`STRING2FINGERPRINT_TRAIN_THREADS` sets the number of threads, which
+otherwise follows the number of jobs of the build. Training is
+deterministic, so neither changes the model.
+
+The build host must be Linux, because the build script links the library.
+Data files are trusted input: whoever controls them chooses what the model
+flags.
+
 ### Determinism
 
 The same samples in the same order with the same settings give the same
