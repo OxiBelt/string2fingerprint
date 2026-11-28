@@ -57,6 +57,11 @@ pub const MAX_SHIFT: u8 = 62;
 
 const MAGIC: [u8; 4] = *b"S2FP";
 
+// The format stores the layer count in 8 bits and a dimension in 16 bits.
+const _: () = assert!(MAX_LAYERS <= u8::MAX as usize);
+const _: () = assert!(FINGERPRINT_LEN <= u16::MAX as usize);
+const _: () = assert!(MAX_HIDDEN <= u16::MAX as usize);
+
 /// Maps an output-layer value `q`, stored at index `q + 128`, to the score
 /// `round(255 / (1 + exp(-q / 16)))`.
 const LOGISTIC: [u8; 256] = [
@@ -114,6 +119,29 @@ impl fmt::Display for ModelError {
 }
 
 impl core::error::Error for ModelError {}
+
+/// The parameters of one fully connected layer, as the format stores them.
+///
+/// A layer with `n` inputs has one bias and one multiplier for each of its
+/// `m` outputs and `m * n` weights. [`Model::from_layers`] validates the
+/// parameters, and [`Model::layers`] returns those of a model.
+///
+/// The fields are public so that a layer can be written as a literal. They
+/// are the fields of format version [`FORMAT_VERSION`], and a format that
+/// stores more for each layer would change this type.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub struct LayerParameters {
+    /// The right shift that follows the multiplication, from 1 to
+    /// [`MAX_SHIFT`].
+    pub shift: u8,
+    /// The bias of each output.
+    pub biases: Vec<i32>,
+    /// The multiplier of each output, which is not negative.
+    pub multipliers: Vec<i32>,
+    /// The weights in row-major order: all inputs of the first output, then
+    /// of the second, and so on. No weight is -128.
+    pub weights: Vec<i8>,
+}
 
 /// One fully connected layer.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -376,6 +404,131 @@ impl Model {
         Ok(Self {
             layers: layers.into(),
         })
+    }
+
+    /// Validates the parameters of every layer, from the first hidden layer
+    /// to the output layer, and creates the model.
+    ///
+    /// The number of outputs of a layer is the length of its biases. The
+    /// first layer has [`FINGERPRINT_LEN`] inputs, and every other layer has
+    /// as many inputs as the layer before it has outputs. The constraints
+    /// are those of the [format](self), so that
+    /// `Model::from_layers(layers)?.to_bytes()` is a valid model file.
+    ///
+    /// ```
+    /// use string2fingerprint::Category;
+    /// use string2fingerprint::fingerprint::FINGERPRINT_LEN;
+    /// use string2fingerprint::model::{LayerParameters, Model};
+    ///
+    /// // A model with one layer and no evidence: every score is 128.
+    /// let layer = LayerParameters {
+    ///     shift: 1,
+    ///     biases: vec![0; Category::COUNT],
+    ///     multipliers: vec![0; Category::COUNT],
+    ///     weights: vec![0; Category::COUNT * FINGERPRINT_LEN],
+    /// };
+    /// let model = Model::from_layers(vec![layer])?;
+    /// assert_eq!(Model::from_bytes(&model.to_bytes())?, model);
+    /// # Ok::<(), string2fingerprint::model::ModelError>(())
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ModelError::InvalidDimensions`] when the layer count, the
+    /// number of outputs of any layer, or the length of its multipliers or
+    /// weights does not fit, and otherwise the first [`ModelError`] that
+    /// [`Model::from_bytes`] would return for the encoded parameters.
+    pub fn from_layers(layers: Vec<LayerParameters>) -> Result<Self, ModelError> {
+        let layer_count = layers.len();
+        if !(1..=MAX_LAYERS).contains(&layer_count) {
+            return Err(ModelError::InvalidDimensions);
+        }
+        // Every dimension is checked before any parameter, as
+        // `Model::from_bytes` checks the header before the layers.
+        let mut cols = FINGERPRINT_LEN;
+        for (index, layer) in layers.iter().enumerate() {
+            let rows = layer.biases.len();
+            let rows_fit = if index + 1 == layer_count {
+                rows == Category::COUNT
+            } else {
+                (1..=MAX_HIDDEN).contains(&rows)
+            };
+            if !rows_fit || layer.multipliers.len() != rows || layer.weights.len() != rows * cols {
+                return Err(ModelError::InvalidDimensions);
+            }
+            cols = rows;
+        }
+        let mut cols = FINGERPRINT_LEN;
+        let mut validated = Vec::with_capacity(layer_count);
+        for layer in layers {
+            let rows = layer.biases.len();
+            validated.push(Layer::new(
+                layer.weights.into(),
+                cols,
+                layer.biases.into(),
+                layer.multipliers.into(),
+                layer.shift,
+            )?);
+            cols = rows;
+        }
+        Ok(Self {
+            layers: validated.into(),
+        })
+    }
+
+    /// Returns a copy of the parameters of every layer, from the first
+    /// hidden layer to the output layer.
+    ///
+    /// [`Model::from_layers`] creates an equal model from them.
+    pub fn layers(&self) -> impl ExactSizeIterator<Item = LayerParameters> + '_ {
+        self.layers.iter().map(|layer| LayerParameters {
+            shift: layer.shift,
+            biases: layer.bias.to_vec(),
+            multipliers: layer.multiplier.to_vec(),
+            weights: layer.matrix.weights().to_vec(),
+        })
+    }
+
+    /// Returns the model in the [format](self) that [`Model::from_bytes`]
+    /// reads.
+    ///
+    /// The format has one encoding of each model, so the bytes of a parsed
+    /// model equal the bytes it was parsed from.
+    #[must_use]
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let body: usize = self
+            .layers
+            .iter()
+            .map(|layer| 4 + layer.matrix.rows() * (8 + layer.matrix.cols()))
+            .sum();
+        let mut bytes =
+            Vec::with_capacity(MAGIC.len() + 4 + 2 * (self.layers.len() + 1) + body + 4);
+        bytes.extend(MAGIC);
+        bytes.extend(FORMAT_VERSION.to_le_bytes());
+        // Validation bounds the layer count by `MAX_LAYERS` and every
+        // dimension by `FINGERPRINT_LEN`, so both conversions are exact.
+        bytes.push(self.layers.len() as u8);
+        bytes.push(0);
+        bytes.extend((FINGERPRINT_LEN as u16).to_le_bytes());
+        for layer in &self.layers {
+            bytes.extend((layer.matrix.rows() as u16).to_le_bytes());
+        }
+        for layer in &self.layers {
+            bytes.extend([layer.shift, 0, 0, 0]);
+            for value in layer.bias.iter().chain(&layer.multiplier) {
+                bytes.extend(value.to_le_bytes());
+            }
+            bytes.extend(
+                layer
+                    .matrix
+                    .weights()
+                    .iter()
+                    .map(|weight| weight.to_le_bytes()[0]),
+            );
+        }
+        let sum = checksum(&bytes);
+        bytes.extend(sum.to_le_bytes());
+        bytes
     }
 
     /// Returns the number of outputs of each layer, from the first hidden
@@ -904,6 +1057,148 @@ pub(crate) mod tests {
                     .all(|other| other.to_string() != message)
             );
         }
+    }
+
+    fn parameters(layer: &RawLayer) -> LayerParameters {
+        LayerParameters {
+            shift: layer.shift,
+            biases: layer.bias.clone(),
+            multipliers: layer.multiplier.clone(),
+            weights: layer.weights.clone(),
+        }
+    }
+
+    #[test]
+    fn to_bytes_reproduces_the_parsed_bytes() {
+        let mut rng = Rng::new(31);
+        for hidden in [&[][..], &[1], &[24], &[MAX_HIDDEN, 3], &[5, 6, 7]] {
+            let mut dimensions = vec![FINGERPRINT_LEN];
+            dimensions.extend(hidden);
+            dimensions.push(Category::COUNT);
+            let bytes = encode(&dimensions, &random_layers(&mut rng, &dimensions));
+            let model = Model::from_bytes(&bytes).unwrap();
+            assert_eq!(model.to_bytes(), bytes, "hidden {hidden:?}");
+        }
+        for embedded in EmbeddedModel::ALL {
+            assert_eq!(embedded.load().to_bytes(), embedded.bytes(), "{embedded}");
+        }
+    }
+
+    #[test]
+    fn from_layers_matches_from_bytes() {
+        let mut rng = Rng::new(32);
+        for hidden in [&[][..], &[9], &[MAX_HIDDEN, 2], &[4, 3, 2]] {
+            let mut dimensions = vec![FINGERPRINT_LEN];
+            dimensions.extend(hidden);
+            dimensions.push(Category::COUNT);
+            let layers = random_layers(&mut rng, &dimensions);
+            let parsed = Model::from_bytes(&encode(&dimensions, &layers)).unwrap();
+            let built = Model::from_layers(layers.iter().map(parameters).collect()).unwrap();
+            assert_eq!(built, parsed, "hidden {hidden:?}");
+            assert_eq!(Model::from_layers(parsed.layers().collect()), Ok(parsed));
+        }
+        let embedded = Model::embedded();
+        assert_eq!(embedded.layers().len(), 3);
+        assert_eq!(
+            Model::from_layers(embedded.layers().collect()),
+            Ok(embedded)
+        );
+    }
+
+    #[test]
+    fn from_layers_rejects_what_from_bytes_rejects() {
+        let mut rng = Rng::new(33);
+        let dimensions = [FINGERPRINT_LEN, 6, Category::COUNT];
+        let valid: Vec<LayerParameters> = random_layers(&mut rng, &dimensions)
+            .iter()
+            .map(parameters)
+            .collect();
+        assert!(Model::from_layers(valid.clone()).is_ok());
+        type Edit<'a> = &'a dyn Fn(&mut Vec<LayerParameters>);
+        let edited = |edit: Edit<'_>| {
+            let mut layers = valid.clone();
+            edit(&mut layers);
+            Model::from_layers(layers)
+        };
+
+        let dimension_edits: [Edit<'_>; 10] = [
+            &|layers| layers.clear(),
+            &|layers| {
+                // A dimension error comes first, even after a parameter
+                // error in an earlier layer.
+                layers[0].shift = 0;
+                layers[1].multipliers.push(0);
+            },
+            &|layers| {
+                let hidden = LayerParameters {
+                    shift: 1,
+                    biases: vec![0; 6],
+                    multipliers: vec![0; 6],
+                    weights: vec![0; 36],
+                };
+                // Five layers: one more than the format allows.
+                layers.splice(1..1, vec![hidden; 3]);
+            },
+            &|layers| {
+                layers.pop();
+            },
+            &|layers| {
+                layers.remove(0);
+            },
+            &|layers| layers[0].weights.push(0),
+            &|layers| {
+                layers[0].weights.pop();
+            },
+            &|layers| layers[1].multipliers.push(0),
+            &|layers| {
+                // A hidden layer without outputs.
+                layers[0] = LayerParameters {
+                    shift: 1,
+                    ..LayerParameters::default()
+                };
+                layers[1].weights.clear();
+            },
+            &|layers| {
+                // A hidden layer above the largest dimension.
+                let rows = MAX_HIDDEN + 1;
+                layers[0] = LayerParameters {
+                    shift: 1,
+                    biases: vec![0; rows],
+                    multipliers: vec![0; rows],
+                    weights: vec![0; rows * FINGERPRINT_LEN],
+                };
+                layers[1].weights = vec![0; Category::COUNT * rows];
+            },
+        ];
+        for (index, edit) in dimension_edits.into_iter().enumerate() {
+            assert_eq!(
+                edited(edit),
+                Err(ModelError::InvalidDimensions),
+                "edit {index}"
+            );
+        }
+
+        let parameter_edits: [Edit<'_>; 4] = [
+            &|layers| layers[0].shift = 0,
+            &|layers| layers[1].shift = MAX_SHIFT + 1,
+            &|layers| layers[1].multipliers[0] = -1,
+            &|layers| layers[0].weights[7] = i8::MIN,
+        ];
+        for (index, edit) in parameter_edits.into_iter().enumerate() {
+            assert_eq!(
+                edited(edit),
+                Err(ModelError::InvalidParameter),
+                "edit {index}"
+            );
+        }
+
+        assert_eq!(
+            edited(&|layers| {
+                layers[0].weights.fill(127);
+                layers[0].biases[0] = i32::MAX;
+            }),
+            Err(ModelError::AccumulatorOverflow)
+        );
     }
 
     /// Golden vectors written by `tools/train/train.py`: for each vector, a

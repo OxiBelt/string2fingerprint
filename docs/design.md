@@ -198,6 +198,9 @@ Parsing checks the length and the checksum first, so it allocates at most the
 size of the byte string. It validates every field and reports a fixed error
 kind without echoing model bytes. The checksum detects accidental corruption.
 It is not an authenticity check, so load models only from a trusted source.
+A model has exactly one encoding, so writing a parsed model gives the bytes
+it was parsed from. A model can also be created from the parameters of its
+layers, which are validated in the same way.
 
 The crate embeds several models in this format, which differ in their
 hidden layers and in the weight that training gave to benign text. One of
