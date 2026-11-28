@@ -4,7 +4,9 @@
 //! Scoring is CPU-bound: with an AVX-512 VNNI backend, about 10
 //! microseconds for an input of one window (512 bytes) and 1.6 ms for
 //! 64 KiB. [`AsyncScorer`] and [`AsyncDetector`] are the asynchronous counterparts
-//! of [`Scorer`](crate::Scorer) and [`Detector`](crate::Detector). Their methods run an input of at most the
+//! of [`Scorer`](crate::Scorer) and [`Detector`](crate::Detector), and
+//! [`AsyncScoreStream`] and [`AsyncDetectionStream`] those of their streams,
+//! which also implement Tokio's `AsyncWrite`. Their methods run an input of at most the
 //! inline limit in the polling task, taking one unit of its cooperative
 //! budget, and a longer one on Tokio's blocking pool, and return futures
 //! ([`Offload`], [`Parallel`]) that own their input. Outside a Tokio
@@ -16,11 +18,14 @@
 
 mod detector;
 mod offload;
+mod pipeline;
 mod scorer;
+mod stream;
 
 pub use detector::AsyncDetector;
 pub use offload::{Offload, Parallel};
 pub use scorer::AsyncScorer;
+pub use stream::{AsyncDetectionStream, AsyncScoreStream};
 
 /// The default inline limit of [`AsyncScorer`] and [`AsyncDetector`]: the
 /// longest input, in bytes, that is scored in the polling task.

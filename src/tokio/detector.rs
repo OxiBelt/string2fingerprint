@@ -1,10 +1,14 @@
 //! The asynchronous counterpart of [`Detector`].
 
+use core::future::Future;
+use std::io;
 use std::sync::Arc;
+
+use ::tokio::io::AsyncRead;
 
 use super::offload::Job;
 use super::scorer::{collect, shares, total_cost};
-use super::{AsyncScorer, DEFAULT_INLINE_LIMIT, Offload, Parallel};
+use super::{AsyncDetectionStream, AsyncScorer, DEFAULT_INLINE_LIMIT, Offload, Parallel};
 use crate::detect::{Detection, Detector, Preset};
 
 /// Decides whether untrusted bytes are flagged on a Tokio runtime without
@@ -208,5 +212,30 @@ impl AsyncDetector {
                 .collect()
         };
         Parallel::new(jobs)
+    }
+
+    /// Reads `reader` to its end and decides its scores. See
+    /// [`AsyncScorer::score_reader`], and bound an untrusted source.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first error of `reader` other than
+    /// [`io::ErrorKind::Interrupted`].
+    pub fn detect_reader<R>(
+        &self,
+        reader: R,
+    ) -> impl Future<Output = io::Result<Detection>> + use<R>
+    where
+        R: AsyncRead + Unpin,
+    {
+        let mut stream = self.stream();
+        async move { stream.read_to_end(reader).await }
+    }
+
+    /// Returns a stream that decides an input that arrives in parts with
+    /// this detector. See [`AsyncDetectionStream`].
+    #[must_use]
+    pub fn stream(&self) -> AsyncDetectionStream {
+        AsyncDetectionStream::new(Arc::clone(&self.detector), self.inline_limit)
     }
 }
