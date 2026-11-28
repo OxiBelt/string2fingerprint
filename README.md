@@ -255,6 +255,68 @@ println!("{:?}", trace.logits());
 `Scorer::builder` chooses the model and the backend and reports a model that
 does not parse or a backend that the CPU lacks as one error.
 
+### Asynchronous Interface
+
+The `tokio` feature adds `string2fingerprint::tokio`, the same interface for
+[Tokio](https://tokio.rs) 1.54.1 or later. Scoring is CPU-bound, about 1.6 ms
+per 64 KiB with a SIMD backend, so these items run short inputs in the task
+that polls them and longer ones on Tokio's blocking pool, where they do not
+hold a runtime worker. Their results equal those of the synchronous items.
+
+```toml
+[dependencies]
+string2fingerprint = { git = "https://github.com/OxiBelt/string2fingerprint", features = ["tokio"] }
+# The runtime stays the application's own dependency.
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "net", "io-util"] }
+```
+
+| Synchronous | Asynchronous (`string2fingerprint::tokio`) |
+| --- | --- |
+| `Detector`, `Scorer` | `AsyncDetector`, `AsyncScorer`: shared handles whose methods of the same names return futures (`Offload`, `Parallel`) that own their input |
+| `DetectionStream`, `ScoreStream` | `AsyncDetectionStream`, `AsyncScoreStream`: also Tokio `AsyncWrite`; long parts are scored on the blocking pool while the next arrives |
+| `detect_reader`, `score_reader` on `io::Read` | the same names on Tokio `AsyncRead` |
+| `fingerprint::Fingerprinter` | `tokio::fingerprint::FingerprintReader`: the windows of an `AsyncRead` |
+| `Model::from_bytes` | `tokio::model::from_bytes`, `tokio::model::read` (a file) |
+
+```rust
+use string2fingerprint::tokio::AsyncDetector;
+use string2fingerprint::Preset;
+use tokio::io::AsyncReadExt;
+
+// Create one detector and clone it into each task.
+let detector = AsyncDetector::with_preset(Preset::Strict);
+
+// A request field: up to 512 bytes are decided in this task.
+let detection = detector.detect(b"/search?q=1%27%20OR%20%271%27=%271").await;
+
+// A body read from a socket, bounded, scored on the blocking pool while it
+// is read.
+let detection = detector.detect_reader(body.take(1 << 20)).await?;
+
+// A body that arrives in parts, with an early stop. Parts of at most 512
+// bytes are decided as they arrive; a longer one goes to the blocking pool,
+// and `stream.flush().await` waits for it.
+let mut stream = detector.stream();
+while let Some(part) = parts.next().await {
+    stream.update(&part).await;
+    if stream.detection().is_flagged() {
+        break;
+    }
+}
+let detection = stream.finish().await;
+```
+
+`AsyncDetector::with_inline_limit` sets the longest input that runs in the
+polling task, 512 bytes by default; in a batch or the fields of a message,
+each item counts as at least one window of 512 bytes. Dropping a future
+before the pool started its work drops the work. Outside a Tokio runtime
+every future runs in the task that polls it. The `detect_async` example decides lines of
+standard input like `detect`:
+
+```sh
+cargo run --release --features tokio --example detect_async strict < lines.txt
+```
+
 ## Training Your Own Model
 
 The `train` feature adds `string2fingerprint::train`, which trains a model
