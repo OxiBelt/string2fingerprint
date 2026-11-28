@@ -72,6 +72,54 @@ empty set labels benign text. For one input, the flagged categories that are
 not labels are its false positives, and the labels that are not flagged are
 its false negatives.
 
+## Evaluation
+
+An evaluation measures a model on labeled samples. A sample is the scores of
+one input and the set of its labels. A sample is a positive of each category
+in its labels and a negative of every other category. At a threshold, a
+positive that is flagged is a true positive and one that is not is a false
+negative, and a negative that is flagged is a false positive and one that is
+not is a true negative.
+
+The benign samples are those whose label set is empty. When only benign
+samples count as negatives, a sample labeled with other categories is no
+longer a negative of a category, and it still counts as a positive of its own
+categories. This view applies when a flag in the wrong attack category is not
+an error that matters.
+
+The sample-level view treats each sample as one decision. A sample is a
+positive when its label set is not empty, and it is flagged at one threshold
+for every category when its highest score reaches that threshold.
+
+An evaluation keeps the number of positive and negative samples at each
+score for each category, so that every threshold can be evaluated after the
+samples are recorded. Counts saturate instead of overflowing. The rate of `k`
+of `n` samples is the nearest double-precision value to `k / n`, and a limit
+on a rate is met when that value is within the limit, so a limit that equals
+`k / n` in decimal is met by `k` of `n`.
+
+A threshold can be chosen for each category to meet one objective:
+
+- A maximum false positive rate chooses the lowest threshold whose false
+  positive rate is at most the limit. The threshold `never` has the rate 0. It
+  is undefined without a negative sample or for a limit outside 0 to 1.
+- A minimum recall chooses the highest threshold whose recall is at least the
+  limit. The threshold 0 has the recall 1. It is undefined without a positive
+  sample or for a limit outside 0 to 1.
+- A minimum cost chooses the threshold with the least sum of the false
+  positives and the false negatives, each weighted by its cost. When several
+  thresholds have the least cost, it chooses the lower median of them in
+  ascending order, so that a gap between the scores of the positives and the
+  negatives is split in the middle. It is undefined without a sample or for a
+  cost that is negative or not finite.
+
+A category whose objective is undefined keeps a threshold that the caller
+supplies.
+
+Results describe only the samples that were recorded. Thresholds should be
+chosen on samples that were not used to train the model, and checked on
+samples that were not used to choose them.
+
 ## Pipeline
 
 ```text

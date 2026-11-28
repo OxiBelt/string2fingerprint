@@ -116,8 +116,9 @@ impl fmt::Display for Threshold {
 /// assert!(!flagged.contains(Category::Malformed));
 /// ```
 ///
-/// Thresholds are the caller's choice. The evaluation tools of this crate
-/// can derive them from labeled samples of the caller's own traffic.
+/// Thresholds are the caller's choice. The [evaluation tools](crate::eval)
+/// of this crate can derive them from labeled samples of the caller's own
+/// traffic.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Thresholds([Threshold; Category::COUNT]);
 
