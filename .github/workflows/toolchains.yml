@@ -70,9 +70,11 @@ jobs:
     name: Rust ${{ matrix.toolchain }} (${{ matrix.arch }})
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
-    # A nightly release can break for reasons outside the crate. Its result
-    # is shown, but it does not fail the workflow.
-    continue-on-error: ${{ matrix.toolchain == 'nightly' }}
+    # A nightly release can break for reasons outside the crate, so its
+    # result never fails the workflow. A beta that breaks the crate fails
+    # the weekly run and pushes to `main`, but not a pull request, which
+    # did not cause it.
+    continue-on-error: ${{ matrix.toolchain == 'nightly' || (matrix.toolchain == 'beta' && github.event_name == 'pull_request') }}
     strategy:
       fail-fast: false
       matrix:
@@ -91,6 +93,16 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+
+      - name: Verify native runner architecture
+        env:
+          EXPECTED_ARCH: ${{ matrix.arch }}
+        run: |
+          actual_arch="$(uname -m)"
+          if [[ "$actual_arch" != "$EXPECTED_ARCH" ]]; then
+            echo "Expected $EXPECTED_ARCH, runner reports $actual_arch" >&2
+            exit 1
+          fi
 
       - name: Install Rust ${{ matrix.toolchain }}
         env:
@@ -112,10 +124,17 @@ jobs:
         run: cargo test --locked --manifest-path tests/downstream/Cargo.toml
 
       - name: Run Clippy
+        id: clippy
         # New releases add lints. They are reported here and fixed when the
         # pinned toolchain moves, so they do not block unrelated changes.
         continue-on-error: true
         run: cargo clippy --all-targets --all-features --locked -- -D warnings
+
+      - name: Report Clippy findings
+        if: steps.clippy.outcome == 'failure'
+        env:
+          TOOLCHAIN: ${{ matrix.toolchain }}
+        run: echo "::warning title=Clippy on $TOOLCHAIN::Clippy on Rust $TOOLCHAIN reports warnings. See the Run Clippy step."
 
   features:
     name: Features (${{ matrix.name }})

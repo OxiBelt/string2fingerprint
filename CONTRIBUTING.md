@@ -103,10 +103,11 @@ Each workflow in `.github/workflows/` has one purpose:
 
 `check.yml` gates every change on the pinned toolchain, so its results do not
 depend on the day they ran. `toolchains.yml` also runs weekly, because new
-releases change without a change to the repository. Its Clippy runs and its
-nightly jobs report problems without failing, because a new lint or a broken
-nightly release is fixed when the pinned toolchain moves, not in an unrelated
-change. A failing stable or beta build or test does fail it.
+releases change without a change to the repository. Its Clippy runs report
+warnings as annotations without failing, and its nightly jobs never fail it,
+because a new lint or a broken nightly release is fixed when the pinned
+toolchain moves, not in an unrelated change. A failing stable build or test
+fails it, and so does a failing beta, except on a pull request.
 
 The minimum supported version is the `rust-version` in `Cargo.toml`. While it
 equals the pinned toolchain, `check.yml` covers it and the MSRV job only checks
@@ -136,7 +137,7 @@ the two sets of packages cannot be installed together:
 rustup target add s390x-unknown-linux-gnu
 CARGO_TARGET_S390X_UNKNOWN_LINUX_GNU_LINKER=s390x-linux-gnu-gcc \
 CARGO_TARGET_S390X_UNKNOWN_LINUX_GNU_RUNNER='qemu-s390x -L /usr/s390x-linux-gnu' \
-  cargo test --target s390x-unknown-linux-gnu --all-features --locked --tests
+  cargo test --target s390x-unknown-linux-gnu --all-features --locked
 ```
 
 ## Commit Messages
