@@ -1,8 +1,7 @@
 # Training Tools
 
-These tools produce the default model that the crate embeds from
-`models/default.s2fp`. They are not part of the library and are not needed to
-use it.
+These tools produce the models in `models/` that the crate embeds. They are
+not part of the library and are not needed to use it.
 
 | File | Purpose |
 | --- | --- |
@@ -13,6 +12,8 @@ use it.
 | `benign.py` | Benign text, the pools shared with attack carriers, and corruption of benign samples. |
 | `dataset.py` | Joins some samples into longer ones and writes a corpus file. |
 | `train.py` | Trains, quantizes, evaluates, and exports a model. Needs NumPy. |
+| `models.json` | The data splits and the preset of every model. |
+| `build_models.py` | Builds every model in `models.json`, from data to evaluation. |
 | `test_*.py` | Tests of the tools. |
 
 ## Procedure
@@ -21,22 +22,40 @@ Run the commands from the repository root. `WORK` is any directory outside
 the repository.
 
 ```sh
+python3 -B tools/train/build_models.py --work "$WORK" --install
+cargo test
+```
+
+`build_models.py` builds the `fingerprint_corpus` and `score` examples,
+generates the splits that `models.json` lists, extracts their fingerprints,
+trains every model, scores the development set in `tests/data/` with each
+one, and with `--install` copies each model and its golden vectors to
+`models/`. It skips a step whose output exists in `WORK` unless `--force` is
+given, and `--only NAME...` builds the named models only. It prints a
+summary table and writes `WORK/summary.json`.
+
+The script runs these steps, which can also be run by hand:
+
+```sh
 set -e
 cargo build --release --examples
 
-for split in "train 1 400000" "val 2 60000" "test 3 60000"; do
+for split in "train 1 600000" "val 2 60000" "test 3 60000"; do
   set -- $split
   python3 -B tools/train/dataset.py --seed "$2" --count "$3" --out "$WORK/$1.bin"
   target/release/examples/fingerprint_corpus "$WORK/$1.bin" "$WORK/$1.x" "$WORK/$1.y"
 done
 
-python3 -B tools/train/train.py --data "$WORK" --out "$WORK/out" \
+python3 -B tools/train/train.py --data "$WORK" --out "$WORK/out" --name default \
   --hidden 64 64 --epochs 16 --quantized-epochs 3 --seed 1
 
 cp "$WORK/out/default.s2fp" models/default.s2fp
-cp "$WORK/out/golden.bin" models/default.golden
-cargo test
+cp "$WORK/out/default.golden" models/default.golden
 ```
+
+`train.py` writes `NAME.s2fp`, `NAME.golden`, and `NAME.json` with the
+metrics. `--benign-weight` scales the loss of benign samples; a value above
+1 trades recall for fewer false positives.
 
 Every step is deterministic for its seed on one machine. Floating-point
 training can round differently on another CPU or NumPy build, so a rerun

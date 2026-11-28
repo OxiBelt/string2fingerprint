@@ -1,0 +1,45 @@
+{
+  "data": {
+    "splits": {
+      "train": {"seed": 1, "count": 600000},
+      "val": {"seed": 2, "count": 60000},
+      "test": {"seed": 3, "count": 60000}
+    },
+    "join_rate": 0.35
+  },
+  "models": [
+    {
+      "name": "compact",
+      "description": "One hidden layer of 32 units, for hosts that need the smallest model.",
+      "hidden": [32],
+      "epochs": 16,
+      "quantized_epochs": 3,
+      "seed": 1
+    },
+    {
+      "name": "default",
+      "description": "Two hidden layers of 64 units. The model that `Scorer::new` uses.",
+      "hidden": [64, 64],
+      "epochs": 16,
+      "quantized_epochs": 3,
+      "seed": 1
+    },
+    {
+      "name": "large",
+      "description": "Two hidden layers of 192 and 96 units, for the best separation at a higher cost.",
+      "hidden": [192, 96],
+      "epochs": 16,
+      "quantized_epochs": 3,
+      "seed": 1
+    },
+    {
+      "name": "strict",
+      "description": "The default shape trained to flag less benign text, for hosts that block on a score.",
+      "hidden": [64, 64],
+      "epochs": 16,
+      "quantized_epochs": 3,
+      "seed": 1,
+      "benign_weight": 4.0
+    }
+  ]
+}
