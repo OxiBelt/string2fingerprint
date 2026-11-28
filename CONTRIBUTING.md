@@ -85,6 +85,7 @@ Each workflow in `.github/workflows/` has one purpose:
 | --- | --- | --- |
 | `check.yml` | Documentation, formatting, Clippy, Rust documentation, and native builds and tests on x86-64, Arm64, and RISC-V. | Pinned |
 | `toolchains.yml` | Builds and tests with the minimum supported version, stable, beta, and nightly, and each feature on its own. | Each named one |
+| `targets.yml` | Clippy for other Linux targets, tests on big-endian s390x under QEMU and on 32-bit x86, and the refusal of other systems. | Pinned |
 
 `check.yml` gates every change on the pinned toolchain, so its results do not
 depend on the day they ran. `toolchains.yml` also runs weekly, because new
@@ -103,6 +104,17 @@ precedence over `rust-toolchain.toml`:
 rustup toolchain install beta --profile minimal --component clippy
 RUSTUP_TOOLCHAIN=beta cargo test --all-features --locked
 cargo test --locked --features train
+```
+
+The s390x tests need `qemu-user`, `gcc-s390x-linux-gnu`, and
+`libc6-dev-s390x-cross`, and the i686 tests need `gcc-multilib`. On Ubuntu,
+the two sets of packages cannot be installed together:
+
+```sh
+rustup target add s390x-unknown-linux-gnu
+CARGO_TARGET_S390X_UNKNOWN_LINUX_GNU_LINKER=s390x-linux-gnu-gcc \
+CARGO_TARGET_S390X_UNKNOWN_LINUX_GNU_RUNNER='qemu-s390x -L /usr/s390x-linux-gnu' \
+  cargo test --target s390x-unknown-linux-gnu --all-features --locked
 ```
 
 ## Commit Messages

@@ -1,0 +1,161 @@
+name: Linux targets
+
+# `check.yml` builds and tests natively on x86-64, Arm64, and RISC-V. This
+# workflow checks the other Linux targets that the scalar kernel serves,
+# tests a big-endian and a 32-bit target, and checks that other operating
+# systems are refused, all with the pinned toolchain.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  clippy:
+    name: Clippy for ${{ matrix.target }}
+    runs-on: ubuntu-26.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          # Checked here too, because the native RISC-V runner can wait in
+          # a queue for a long time.
+          - aarch64-unknown-linux-gnu
+          - riscv64gc-unknown-linux-gnu
+          # Served by the scalar kernel.
+          - i686-unknown-linux-gnu
+          - armv7-unknown-linux-gnueabihf
+          - powerpc64le-unknown-linux-gnu
+          - s390x-unknown-linux-gnu
+          - loongarch64-unknown-linux-gnu
+          # Another C library.
+          - x86_64-unknown-linux-musl
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install pinned Rust for ${{ matrix.target }}
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          rustup toolchain install --no-self-update
+          rustup target add "$TARGET"
+          rustc --version --verbose
+
+      - name: Run Clippy
+        env:
+          TARGET: ${{ matrix.target }}
+        run: cargo clippy --target "$TARGET" --all-targets --all-features --locked -- -D warnings
+
+      - name: Run Clippy without optional features
+        env:
+          TARGET: ${{ matrix.target }}
+        run: cargo clippy --target "$TARGET" --all-targets --locked -- -D warnings
+
+  test:
+    name: Tests on ${{ matrix.target }}
+    runs-on: ubuntu-26.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Big-endian, so that model files and fingerprints are read the
+          # same way on every byte order. Runs under QEMU user emulation.
+          - target: s390x-unknown-linux-gnu
+            packages: qemu-user gcc-s390x-linux-gnu libc6-dev-s390x-cross
+            linker: s390x-linux-gnu-gcc
+            runner: qemu-s390x -L /usr/s390x-linux-gnu
+          # 32-bit, so that lengths and offsets do not assume a 64-bit
+          # `usize`. Runs natively.
+          - target: i686-unknown-linux-gnu
+            packages: gcc-multilib
+            linker: ""
+            runner: ""
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install the linker and emulator
+        env:
+          PACKAGES: ${{ matrix.packages }}
+        run: |
+          sudo apt-get update
+          # shellcheck disable=SC2086 # One word for each package.
+          sudo apt-get install -y --no-install-recommends $PACKAGES
+
+      - name: Install pinned Rust for ${{ matrix.target }}
+        env:
+          TARGET: ${{ matrix.target }}
+          LINKER: ${{ matrix.linker }}
+          RUNNER: ${{ matrix.runner }}
+        run: |
+          rustup toolchain install --no-self-update
+          rustup target add "$TARGET"
+          rustc --version --verbose
+          # Cargo reads the linker and runner of a target from these
+          # variables, in which the target is in upper case with `_`.
+          variable="$(echo "$TARGET" | tr 'a-z-' 'A-Z_')"
+          if [[ -n "$LINKER" ]]; then
+            echo "CARGO_TARGET_${variable}_LINKER=$LINKER" >> "$GITHUB_ENV"
+          fi
+          if [[ -n "$RUNNER" ]]; then
+            echo "CARGO_TARGET_${variable}_RUNNER=$RUNNER" >> "$GITHUB_ENV"
+          fi
+
+      - name: Run tests
+        env:
+          TARGET: ${{ matrix.target }}
+        # Cargo builds the documentation tests for the target too, with its
+        # linker, and runs them through its runner.
+        run: cargo test --target "$TARGET" --all-features --locked
+
+      - name: Train a model on the host for a dependent crate on the target
+        env:
+          TARGET: ${{ matrix.target }}
+        run: cargo test --target "$TARGET" --locked --manifest-path tests/downstream/Cargo.toml
+
+  other-systems:
+    name: Refusal of ${{ matrix.target }}
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - x86_64-apple-darwin
+          - x86_64-pc-windows-gnu
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install pinned Rust for ${{ matrix.target }}
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          rustup toolchain install --no-self-update
+          rustup target add "$TARGET"
+
+      - name: Check that the crate refuses the target
+        env:
+          TARGET: ${{ matrix.target }}
+        # `bash` runs with `pipefail`, so the status is that of `cargo`.
+        shell: bash
+        run: |
+          if cargo check --target "$TARGET" --locked 2>&1 | tee check.log; then
+            echo "The crate compiled for $TARGET, which is not Linux" >&2
+            exit 1
+          fi
+          grep -q 'supports Linux targets only' check.log
+          rm check.log
