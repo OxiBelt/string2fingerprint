@@ -1463,6 +1463,33 @@ mod tests {
     }
 
     #[test]
+    fn fingerprinter_ignores_empty_parts_and_restarts_mid_block() {
+        let mut rng = Rng::new(29);
+        let mut input = vec![0u8; 900];
+        rng.fill(&mut input);
+        let expected: Vec<Fingerprint> = fingerprints(&input).collect();
+        let mut fingerprinter = Fingerprinter::new();
+        // An abandoned input that stops inside a block, then the real one
+        // with empty parts between its parts.
+        fingerprinter.update(&input[..300], |_| {});
+        fingerprinter.reset();
+        let mut windows = Vec::new();
+        for part in input.chunks(100) {
+            fingerprinter.update(&[], |_| unreachable!("an empty part completes no window"));
+            fingerprinter.update(part, |window| windows.push(window.clone()));
+        }
+        windows.extend(fingerprinter.finish().cloned());
+        assert_eq!(windows, expected);
+        // An input finished inside a block leaves nothing behind.
+        fingerprinter.update(&input[..700], |_| {});
+        assert!(fingerprinter.finish().is_some());
+        let mut again = Vec::new();
+        fingerprinter.update(&input, |window| again.push(window.clone()));
+        again.extend(fingerprinter.finish().cloned());
+        assert_eq!(again, expected);
+    }
+
+    #[test]
     fn fingerprinter_reset_discards_the_input() {
         let mut fingerprinter = Fingerprinter::default();
         fingerprinter.update(&[b'%'; 700], |_| {});
