@@ -128,7 +128,11 @@ fn cost(
     let (name, cost) = value
         .split_once('=')
         .ok_or_else(|| Failure::usage(format!("`{option} {value}`: a cost is `CATEGORY=X`")))?;
-    let cost = weight(option, cost)?;
+    let cost = weight(option, cost).map_err(|_| {
+        Failure::usage(format!(
+            "`{option} {value}`: a cost is a finite number of at least 0"
+        ))
+    })?;
     if name == "all" {
         return Ok(all(costs, cost));
     }
@@ -198,8 +202,11 @@ fn parse(arguments: &[String]) -> Result<Option<Options>, Failure> {
                     "--hidden" => {
                         config.hidden = value
                             .split(',')
-                            .map(|size| number(option, size))
-                            .collect::<Result<_, _>>()?;
+                            .map(str::parse)
+                            .collect::<Result<_, _>>()
+                            .map_err(|error| {
+                                Failure::usage(format!("`{option} {value}`: {error}"))
+                            })?;
                     }
                     "--epochs" => config.epochs = number(option, value)?,
                     "--quantized-epochs" => config.quantized_epochs = number(option, value)?,
@@ -399,7 +406,7 @@ fn main() -> ExitCode {
         Ok(Some(options)) => run(options),
         Ok(None) => {
             println!("{USAGE}");
-            println!("Run `cargo doc --examples` or read examples/train.rs for every option.");
+            println!("Every option is described in examples/train.rs.");
             return ExitCode::SUCCESS;
         }
         Err(failure) => Err(failure),
