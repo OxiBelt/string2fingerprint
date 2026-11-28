@@ -39,7 +39,7 @@ pub mod train;
 pub use backend::{Backend, UnsupportedBackend};
 pub use category::Category;
 pub use category_set::{CategorySet, ParseCategorySetError};
-pub use scorer::Scorer;
+pub use scorer::{Scorer, ScorerBuilder, ScorerError};
 pub use scores::Scores;
 pub use thresholds::{Threshold, Thresholds};
 
