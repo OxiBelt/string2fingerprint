@@ -862,7 +862,7 @@ mod tests {
     }
 
     #[test]
-    fn a_sample_weight_counts_like_copies_of_the_sample() {
+    fn a_sample_of_weight_zero_teaches_nothing() {
         let mut copies = Dataset::new();
         let mut weighted = Dataset::new();
         for index in 0..20 {
@@ -979,7 +979,8 @@ mod tests {
             "recall on held-out attacks: {before:?} to {after:?}"
         );
 
-        // The pull towards the base keeps the scores of the old data.
+        // Training started from the base, and the corrections do not
+        // touch this category, so the old data keeps its scores.
         let old = flagged(tuned.model(), &data, Category::PathTraversal);
         assert!(old.0 > 0.9 && old.1 < 0.1, "{old:?}");
         assert_eq!(
