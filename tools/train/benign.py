@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import base64
 import json
+import functools
 import random
 import re
 from typing import Callable, List, Optional, Tuple
@@ -1921,8 +1922,67 @@ _FORBIDDEN = re.compile(
     r"|(\r|\n|%0d|%0a)\s*(get|post|put|head)\s+/",
     re.IGNORECASE,
 )
+# Forms that the attack grammars in `attacks.py` generate beyond the textbook
+# ones above. A benign sample must never match one of them.
+_FORBIDDEN_EXTRA = re.compile(
+    # SQL: quote or parenthesis breakouts, dialect functions, stacked statements
+    r"(['\")`]|^)(/\*[^*]*\*/|%20|%09|%0a|\+|\s)*(or|and|xor|\|\||&&)(/\*[^*]*\*/|%20|%09|%0a|\+|\s)+"
+    r"(\d|['\"(]|not\b|true\b|false\b|null\b|[a-z_]+\s*\()"
+    r"|['\")`](\s|%0[9a]|%20|\+|/\*[^*]*\*/)*;(\s|%0[9a]|%20|\+|/\*[^*]*\*/)*(declare|update|exec|insert|delete|select|drop|create|grant|copy|truncate|shutdown"
+    r"|sleep|benchmark|waitfor|dbms_\w+)\b|^\d+(\s|%0[9a]|%20|\+|/\*[^*]*\*/)*;(\s|%0[9a]|%20|\+|/\*[^*]*\*/)*(sleep|benchmark|waitfor|shutdown|declare|drop)\b"
+    r"|['\")`]\s*(%23|--(\+|%20|$| //| -))|(['\")`]|^)(\s|%0[9a]|%20|\+|/\*[^*]*\*/)*(union|having)(\s|%0[9a]|%20|\+|/\*[^*]*\*/)+(all|select|\d|')"
+    r"|(%0[9a]|/\*[^*]*\*/)(union|select|from|where|and|or|xor|having|group|order|insert|update|delete|drop|limit)\b"
+    r"|\b(union|select|from|where|and|or|xor|having|insert|into|update|delete|drop|table|all|by|set)(%0[9a]|/\*[^*]*\*/)"
+    r"|(%20|\+)(union(%20|\+)(all(%20|\+))?select|having(%20|\+)\d|(sleep|benchmark)\(|waitfor(%20|\+)delay)"
+    r"|\b(dbms_\w+|utl_http|utl_inaddr|gtid_subset|xp_cmdshell|xp_dirtree|sp_configure|randomblob|ctxsys|xmltype"
+    r"|group_concat|string_agg|sqlite_master|pg_catalog|pg_shadow|sysobjects|@@version|@@datadir)\b"
+    r"|\b(order|group)(\s|%0a|%20|%09|\+|/\*\*/)+by(\s|%0a|%20|%09|\+|/\*\*/)+\d+|\binto\s+(outfile|dumpfile)\b|#\s*$|(?<!\*)/\*\s*$|-- [a-z/+-]?$"
+    # markup: event handlers after any separator, sinks, and the less common tags
+    r"|(?<![a-z])on[a-z]{3,20}\s*=|alert\s*[(`]|eval\s*\(|atob\(|\[['`]al['`]|prompt\s*\(|confirm\s*\(|document\.(cookie|domain|write|location)"
+    r"|<\s*/?\s*(marquee|form|applet|xmp|noscript|template|isindex|frameset|keygen|details|video|audio|input|textarea"
+    r"|button|select|source|track|table|xss|animate|set|maction|iframe|frame)\b|expression\s*\(|xi:include"
+    r"|formaction|codebase\s*=|srcdoc\s*=|http-equiv|<!\[cdata\[|\]\]>|-->|</(title|textarea|noscript|option)>"
+    # path traversal: encoded separators, overlong and wide escapes, stream wrappers, sensitive files
+    r"|\.\.(%2f|%5c|;/|\\/|%252f|%255c|%c0|%c1|%e0|%u2215|%u2216|%%)|%c0%a[ef]|%c0%2e|%uff0e|\uff0e\uff0e"
+    r"|(php|phar|zip|compress\.zlib|expect|netdoc)://|jar:(file|https?):|\\\\\?\\|[\\/](c|d|admin|ipc)\$|%2e"
+    r"|/etc/(sudoers|crontab|issue|hostname|fstab|resolv\.conf|ssh/|mysql/|nginx/|apache2/|httpd/|php\.ini)|/proc/"
+    r"|(^|[\s=:'\x22])/root/\.|\.ssh/(id_|authorized)|\.aws/credentials|serviceaccount|web\.config|wp-config|\.htpasswd|\.git/(config|head)"
+    r"|web-inf|::\$data"
+    # command injection: separators followed by a command, shell substitutions
+    r"|([;&|`]|%0a|%0d)\s*(ls|id|whoami|uname|wget|curl|nc|sleep|timeout|ver|kill|python3?|php|ruby|awk|busybox|tftp|telnet|socat|mkfifo|chmod|touch|echo|dir|type"
+    r"|net|ipconfig|systeminfo|tasklist|reg|del|wmic|mshta|rundll32|regsvr32|bitsadmin|hostname|env|printenv|ps|ifconfig"
+    r"|netstat|dig|find|crontab|sudo|tail|head|xxd|cp|sh|bash|pwd|set)\b(?![=;.(-])|\$\{?ifs|base64\s+-d|/bin/(sh|bash)\b|/bin/ca[t\[]"
+    r"|(\r|\n)\s*(whoami|net user|sudo -l|ps aux|ps -ef|ss -tlnp|netstat -an|nslookup|ipconfig|ifconfig|uname -a"
+    r"|cmd\.exe|powershell|ip a|cat /|hostname|python3? -c)\b|cmd\.exe\s*/c|([;&|`]|%0a|%0d)\s*(cmd|powershell|nslookup|last|ss|ip|rm|cat|ping|uname)\b(?![=;.(-])"
+    r"|\w`\s*(id|whoami|uname|ls|cat|ip|last|hostname|env)\b|\$\(\s*(id|whoami|uname|cat|ls|curl|wget)\b|[;&|]\s*\{\s*(cat|whoami|id|curl|wget|busybox|ls|uname|env|nc|bash|sh)\b"
+    r"|[<>]\((?!\))|\w\^\w+\^|\?\?\?/|\\(at|oami)|\$'\\\d|\{[a-z]+,-"
+    # template injection: delimiters and engine idioms
+    r"|\[\[\$|\[\[\s*'?\d+'?\s*[*+-]|\[\(\s*[a-z]|\[=|\*\{|@\(|@\{|<#=|\{\$|\{php\}|smarty|#foreach|xwork|_memberaccess|ognl|getclass"
+    r"|forname|\.constructor\s*\(|\bconstructor\.constructor|__import__|popen|process\.start"
+    r"|\$\{?(env|sys|java|ctx|main|lower|upper|date):|\{=?\s*\d+\s*[*+-]\s*'?\d+'?\s*\}|\{math\b|\{if\s|\{system\("
+    # header injection: a raw, encoded, or escaped line break followed by a header or a request line
+    r"|(\r|\n|%0d|%0a|\\r|\\n|%c4%8a|%e5%98%8a|%e5%98%8d|%u000a)(%20|%09|\s)*(set-cookie|location|content-[a-z-]+|transfer-encoding"
+    r"|x-[a-z-]+|host|refresh|access-control-[a-z-]+|cache-control|link|authorization|connection|upgrade|cookie|reply-to"
+    r"|mime-version|bcc|cc|to|from|subject|vary|info|warn|error)\s*:"
+    r"|(\r|\n|%0d|%0a)(%20|\s)*\d+\.\d+\.\d+\.\d+ - - \[|(%0d|%0a|\r|\n)(%20|\s)*info user|http/1\.[01] \d{3}",
+    re.IGNORECASE,
+)
 _FULLWIDTH_BAD = re.compile("[\uff02-\uff07\uff0a\uff0b\uff0d-\uff19\uff1c-\uff1e\uff20-\uff5d]")
 _MIXED_SCRIPT = re.compile("[A-Za-z][\u0400-\u04ff\u0370-\u03ff]|[\u0400-\u04ff\u0370-\u03ff][A-Za-z]")
+
+
+@functools.lru_cache(maxsize=1)
+def _sensitive_reference() -> re.Pattern:
+    """A reference to a file that the attack grammars treat as a traversal target.
+
+    The attack grammars label such a reference `path_traversal`, so benign text
+    never contains one. Matched after backslashes become slashes.
+    """
+    import attacks  # imported here because `attacks` imports this module
+
+    names = {name.lower().replace("\\", "/") for name in attacks.SENSITIVE_FILES + attacks.WINDOWS_FILES}
+    alternatives = "|".join(re.escape(name) for name in sorted(names, key=len, reverse=True))
+    return re.compile(r"(?:^|[/=:]|%2f)(?:" + alternatives + r")(?![\w-])", re.IGNORECASE)
 
 
 def benign_ok(b: bytes) -> bool:
@@ -1935,6 +1995,8 @@ def benign_ok(b: bytes) -> bool:
         return False
     if has_bad_control(b):
         return False
-    if _FORBIDDEN.search(s) or _FULLWIDTH_BAD.search(s) or _MIXED_SCRIPT.search(s):
+    if _sensitive_reference().search(s.replace("\\", "/")):
+        return False
+    if _FORBIDDEN.search(s) or _FORBIDDEN_EXTRA.search(s) or _FULLWIDTH_BAD.search(s) or _MIXED_SCRIPT.search(s):
         return False
     return True

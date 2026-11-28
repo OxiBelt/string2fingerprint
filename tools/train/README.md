@@ -7,10 +7,11 @@ use it.
 | File | Purpose |
 | --- | --- |
 | `corpus.py` | Generates labeled synthetic samples. Standard library only. |
+| `attacks.py` | Grammars of the six injection categories. |
 | `benign.py` | Benign text, the pools shared with attack carriers, and corruption of benign samples. |
 | `dataset.py` | Joins some samples into longer ones and writes a corpus file. |
 | `train.py` | Trains, quantizes, evaluates, and exports a model. Needs NumPy. |
-| `test_corpus.py`, `test_train.py` | Tests of the tools. |
+| `test_corpus.py`, `test_attacks.py`, `test_train.py` | Tests of the tools. |
 
 ## Procedure
 
@@ -67,6 +68,31 @@ traffic is used.
 - Attack samples are generated from grammars for each category, optionally
   encoded, and placed in the same carriers as benign values: bare, query
   string, form body, cookie, path, prose, JSON, and header values.
+- Each injection grammar in `attacks.py` draws an injection context, a
+  technique, and the technique's operands independently. For example, SQL
+  injection combines 15 breakouts, 12 techniques across five database
+  dialects, generated tables, columns, and conditions, whitespace substitutes,
+  and comment or quote-balancing terminators. Markup injection combines 33
+  tags with 46 event handlers and 19 script sinks, and also covers attribute
+  and script-string breakouts, URL schemes, XML external entities, CSS, and
+  forms. Path traversal has 35 traversal units, about 80 sensitive files on
+  Linux and Windows, stream wrappers, and UNC and drive paths. Command
+  injection has about 60 POSIX and 30 Windows commands, 11 separators, quote
+  breakouts, and space substitutes. Template injection covers more than 20
+  engines and expression languages and generated Log4Shell lookups. Header
+  injection has about 20 line-break forms, 25 injected headers, response
+  splitting, request smuggling, and mail headers.
+- A technique that hides its characters or keywords also sets the
+  `obfuscation` bit, for example a double percent-encoding, an overlong or
+  `%u` escape, a shell glob or quote that spells a command, a caret-escaped
+  Windows command, or a nested Log4Shell lookup.
+- Two labels follow from the shape of a payload, whichever grammar made it,
+  so that the same shape always gets the same label. A reference to a
+  well-known sensitive file by an absolute path, a file URL, or `../` units
+  is `path_traversal`, also inside another attack, such as
+  `load_file('/etc/passwd')`, an XML external entity, a template include, or
+  `cat /etc/passwd`. A keyword split into concatenated strings, such as
+  `top['al'+'ert']`, is `obfuscation`.
 - Most `malformed` samples are a benign sample with exactly one structural
   damage, such as a truncated UTF-8 sequence, a NUL byte, or a damaged
   percent-escape. The clean twin stays in the corpus as a benign sample, so
@@ -75,6 +101,10 @@ traffic is used.
   with its plain or single-layer form in the same way.
 - Hard negatives are benign samples that share vocabulary with attacks, such
   as prose that mentions SQL keywords.
+- Every benign sample passes a final check in `benign.py` that rejects the
+  forms that the attack grammars produce, so that no benign sample carries a
+  payload by accident. `test_attacks.py` checks that the check rejects
+  almost every generated payload and keeps almost every benign sample.
 - `dataset.py` joins about a third of the samples with others, up to 512
   bytes, so that the model also sees dense windows and payloads surrounded by
   unrelated content. A joined sample has the labels of all of its parts.
