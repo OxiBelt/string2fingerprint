@@ -179,7 +179,7 @@ impl Scorer {
     #[must_use]
     pub fn logits(&self, input: &[u8]) -> Logits {
         let mut windows = fingerprints(input);
-        let mut logits = Logits::from_array([i8::MIN; crate::Category::COUNT]);
+        let mut logits = Logits::NONE;
         while let Some(fingerprint) = windows.next_window() {
             logits = logits.max_with(self.logits_fingerprint(fingerprint));
         }
@@ -257,7 +257,7 @@ mod tests {
                 assert_eq!(trace.scores(), scorer.score_fingerprint(&fingerprint));
             }
         }
-        assert_eq!(scorer.logits(b"").as_array(), &[i8::MIN; 8]);
+        assert_eq!(scorer.logits(b""), Logits::NONE);
     }
 
     #[test]

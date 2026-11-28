@@ -117,10 +117,18 @@ pub const fn score_of_logit(value: i8) -> u8 {
 /// range from -128 to 127, so 0 is the boundary at which a score is 128.
 /// Logits keep the order of scores and resolve differences that the table
 /// rounds away near 0 and 255.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+///
+/// There is no `Default`: the logits of an input without a window are
+/// [`Logits::NONE`], which scores 0, while logits of 0 score 128.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Logits([i8; Category::COUNT]);
 
 impl Logits {
+    /// The lowest logit in every category, which scores 0. It is the logits
+    /// of an input without a window, and the start of a fold with
+    /// [`Logits::max_with`].
+    pub const NONE: Self = Self([i8::MIN; Category::COUNT]);
+
     /// Creates logits from an array indexed by [`Category::index`].
     #[must_use]
     pub const fn from_array(values: [i8; Category::COUNT]) -> Self {
@@ -240,7 +248,8 @@ impl Trace {
     /// output layer and beyond.
     #[must_use]
     pub fn activations(&self, layer: usize) -> Option<&[u8]> {
-        (layer + 1 < self.layers).then(|| &self.activations[layer][..self.sizes[layer]])
+        (layer < self.layers.saturating_sub(1))
+            .then(|| &self.activations[layer][..self.sizes[layer]])
     }
 
     /// Returns the logits of the output layer.
@@ -895,7 +904,7 @@ impl Model {
         let mut input: &[u8] = fingerprint.as_array();
 
         let Some((output, hidden)) = self.layers.split_last() else {
-            return Logits::default();
+            return Logits::NONE;
         };
         for (index, layer) in hidden.iter().enumerate() {
             let rows = layer.matrix.rows();
@@ -1208,7 +1217,19 @@ pub(crate) mod tests {
                 }
             }
         }
-        let trace = Model::embedded().trace(Kernel::SCALAR, &Fingerprint::ZERO);
+        let model = Model::embedded();
+        let trace = model.trace(Kernel::SCALAR, &Fingerprint::ZERO);
+        for index in [3, 4, usize::MAX] {
+            assert_eq!(trace.accumulators(index), None);
+            assert!(model.layer(index).is_none());
+        }
+        for index in [2, 3, usize::MAX] {
+            assert_eq!(trace.activations(index), None);
+        }
+        assert_eq!(model.layer(0).unwrap().row(usize::MAX), None);
+        assert_eq!(Trace::EMPTY.activations(0), None);
+        assert_eq!(Logits::NONE.scores(), Scores::ZERO);
+
         assert_eq!(
             format!("{trace:?}"),
             format!(
