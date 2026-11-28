@@ -118,6 +118,11 @@ impl<S: AsRef<Scorer>> ScoreStream<S> {
     pub fn into_scorer(self) -> S {
         self.scorer
     }
+
+    /// Returns the value that lends the scorer.
+    pub(crate) fn source(&self) -> &S {
+        &self.scorer
+    }
 }
 
 /// Every write consumes the whole buffer, and flushing does nothing.

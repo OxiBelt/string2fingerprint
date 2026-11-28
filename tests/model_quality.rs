@@ -86,3 +86,35 @@ fn development_benign_text_is_rarely_flagged() {
         assert!(flagged <= limits(model).1, "{model}: {flagged} of {total}");
     }
 }
+
+/// Every preset of `Detector` must flag most development attacks in some
+/// category and almost no benign line. The measured results are 60 and 0
+/// for `fast`, 63 and 0 for `balanced` and `thorough`, and 60 and 0 for
+/// `blocking`.
+#[test]
+fn presets_decide_the_development_set() {
+    use string2fingerprint::Detector;
+    use string2fingerprint::detect::Preset;
+
+    for preset in Preset::ALL {
+        let detector = Detector::with_preset(preset);
+        let attacks = ATTACKS
+            .lines()
+            .filter_map(|line| line.split_once('\t'))
+            .filter(|(_, payload)| detector.is_flagged(payload.as_bytes()))
+            .count();
+        let benign = BENIGN
+            .lines()
+            .filter(|line| detector.is_flagged(line.as_bytes()))
+            .count();
+        eprintln!("{preset}: {attacks} attacks and {benign} benign lines flagged");
+        assert!(
+            attacks >= 57,
+            "{preset}: {attacks} of {ATTACK_LINES} attacks"
+        );
+        assert!(
+            benign <= 2,
+            "{preset}: {benign} of {BENIGN_LINES} benign lines"
+        );
+    }
+}
