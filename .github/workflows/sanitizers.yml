@@ -66,6 +66,19 @@ jobs:
           rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --component rust-src --no-self-update
           rustc --version --verbose
 
+      - name: Check that the sanitizer runtime starts
+        # A program without the crate, so that a toolchain or runner
+        # problem is told apart from a finding in the crate.
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          echo "page size $(getconf PAGESIZE), kernel $(uname -r)"
+          dir="$(mktemp -d)"
+          echo 'fn main() { println!("sanitizer runtime started"); }' > "$dir/main.rs"
+          rustc -Zsanitizer=address --target "$ARCH-unknown-linux-gnu" -o "$dir/main" "$dir/main.rs"
+          ASAN_OPTIONS=verbosity=1 "$dir/main"
+          rm -r "$dir"
+
       - name: Report the kernel backends that the tests execute
         env:
           ARCH: ${{ matrix.arch }}
