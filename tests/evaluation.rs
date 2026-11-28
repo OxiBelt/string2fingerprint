@@ -149,18 +149,45 @@ fn calibrated_thresholds_meet_their_objective() {
     let evaluation = evaluation(&samples);
     let fallback = Thresholds::uniform(Threshold::NEVER);
 
+    // No sample is flagged in a category that it is a negative of: in the
+    // default view any category outside its labels, and with benign
+    // negatives any category of a benign sample.
     let strict = Objective::MaxFalsePositiveRate(0.0);
-    for thresholds in [
-        evaluation.thresholds(strict, fallback),
-        evaluation.benign_negatives().thresholds(strict, fallback),
-    ] {
-        for sample in samples.iter().filter(|sample| sample.labels.is_empty()) {
-            let flagged = sample.scores.flagged(&thresholds);
+    let views = [
+        (evaluation.thresholds(strict, fallback), false),
+        (
+            evaluation.benign_negatives().thresholds(strict, fallback),
+            true,
+        ),
+    ];
+    for (thresholds, benign_negatives) in views {
+        for sample in &samples {
+            if benign_negatives && !sample.labels.is_empty() {
+                continue;
+            }
+            let wrong = sample.scores.flagged(&thresholds) - sample.labels;
             assert!(
-                flagged.is_empty(),
-                "{} line {} flagged as {flagged}",
+                wrong.is_empty(),
+                "{} line {} flagged as {wrong}",
                 sample.source,
                 sample.line
+            );
+        }
+        // Each threshold is the lowest that does so.
+        for category in Category::ALL {
+            let threshold = thresholds.get(category);
+            let Some(lower) = threshold.index().checked_sub(1) else {
+                continue;
+            };
+            let lower = Threshold::from_index(lower).unwrap();
+            let view = if benign_negatives {
+                evaluation.benign_negatives()
+            } else {
+                evaluation.clone()
+            };
+            assert!(
+                view.confusion(category, lower).false_positives > 0,
+                "{category}"
             );
         }
     }

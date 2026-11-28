@@ -125,6 +125,10 @@ impl core::error::Error for ModelError {}
 /// A layer with `n` inputs has one bias and one multiplier for each of its
 /// `m` outputs and `m * n` weights. [`Model::from_layers`] validates the
 /// parameters, and [`Model::layers`] returns those of a model.
+///
+/// The fields are public so that a layer can be written as a literal. They
+/// are the fields of format version [`FORMAT_VERSION`], and a format that
+/// stores more for each layer would change this type.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub struct LayerParameters {
     /// The right shift that follows the multiplication, from 1 to
@@ -431,7 +435,7 @@ impl Model {
     /// # Errors
     ///
     /// Returns [`ModelError::InvalidDimensions`] when the layer count, the
-    /// number of outputs of a layer, or the length of its multipliers or
+    /// number of outputs of any layer, or the length of its multipliers or
     /// weights does not fit, and otherwise the first [`ModelError`] that
     /// [`Model::from_bytes`] would return for the encoded parameters.
     pub fn from_layers(layers: Vec<LayerParameters>) -> Result<Self, ModelError> {
@@ -439,9 +443,10 @@ impl Model {
         if !(1..=MAX_LAYERS).contains(&layer_count) {
             return Err(ModelError::InvalidDimensions);
         }
+        // Every dimension is checked before any parameter, as
+        // `Model::from_bytes` checks the header before the layers.
         let mut cols = FINGERPRINT_LEN;
-        let mut validated = Vec::with_capacity(layer_count);
-        for (index, layer) in layers.into_iter().enumerate() {
+        for (index, layer) in layers.iter().enumerate() {
             let rows = layer.biases.len();
             let rows_fit = if index + 1 == layer_count {
                 rows == Category::COUNT
@@ -451,6 +456,12 @@ impl Model {
             if !rows_fit || layer.multipliers.len() != rows || layer.weights.len() != rows * cols {
                 return Err(ModelError::InvalidDimensions);
             }
+            cols = rows;
+        }
+        let mut cols = FINGERPRINT_LEN;
+        let mut validated = Vec::with_capacity(layer_count);
+        for layer in layers {
+            let rows = layer.biases.len();
             validated.push(Layer::new(
                 layer.weights.into(),
                 cols,
@@ -1110,8 +1121,14 @@ pub(crate) mod tests {
             Model::from_layers(layers)
         };
 
-        let dimension_edits: [Edit<'_>; 9] = [
+        let dimension_edits: [Edit<'_>; 10] = [
             &|layers| layers.clear(),
+            &|layers| {
+                // A dimension error comes first, even after a parameter
+                // error in an earlier layer.
+                layers[0].shift = 0;
+                layers[1].multipliers.push(0);
+            },
             &|layers| {
                 let hidden = LayerParameters {
                     shift: 1,

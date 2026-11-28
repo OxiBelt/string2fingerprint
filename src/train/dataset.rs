@@ -176,6 +176,7 @@ pub struct Dataset {
 /// The sizes of a dataset, to undo additions.
 struct Checkpoint {
     windows: usize,
+    starts: usize,
     features: usize,
     samples: usize,
 }
@@ -538,6 +539,7 @@ impl Dataset {
     ) -> Result<usize, DatasetError> {
         let checkpoint = Checkpoint {
             windows: self.labels.len(),
+            starts: self.starts.len(),
             features: self.indices.len(),
             samples: self.sample_ends.len(),
         };
@@ -546,7 +548,7 @@ impl Dataset {
             Err(error) => {
                 self.labels.truncate(checkpoint.windows);
                 self.weights.truncate(checkpoint.windows);
-                self.starts.truncate(checkpoint.windows + 1);
+                self.starts.truncate(checkpoint.starts);
                 self.indices.truncate(checkpoint.features);
                 self.values.truncate(checkpoint.features);
                 self.sample_ends.truncate(checkpoint.samples);
@@ -615,6 +617,25 @@ mod tests {
         assert_eq!(data, Dataset::new());
         assert_eq!(data.push(Sample::benign(b"ab")), Ok(1));
         assert!(!data.is_empty());
+    }
+
+    #[test]
+    fn failed_additions_leave_the_dataset_as_it_was() {
+        let bad_lines: &[u8] = b"benign\tan ordinary line\nno tab\n";
+        let bad_corpus = [3, 0, 0, 0, 0, b'a', b'b', b'c', 9, 0, 0, 0, 0, b'x'];
+        let mut filled = Dataset::new();
+        filled.push(Sample::benign(b"some text")).unwrap();
+        for start in [Dataset::new(), filled] {
+            let mut data = start.clone();
+            assert!(data.extend_from_labeled_lines(bad_lines).is_err());
+            assert_eq!(data, start);
+            assert!(data.extend_from_corpus(&bad_corpus).is_err());
+            assert_eq!(data, start);
+            let long = [b'%'; WINDOW_LEN + 1];
+            let lines = [&b"fine\n"[..], &long].concat();
+            assert!(data.extend_from_lines(&lines, Category::Malformed).is_err());
+            assert_eq!(data, start);
+        }
     }
 
     #[test]

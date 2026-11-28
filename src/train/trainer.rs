@@ -46,8 +46,8 @@ pub struct TrainConfig {
     /// The share of each weight that a step of size 1 removes. When
     /// [fine-tuning](Trainer::fine_tune), it is the share of the distance
     /// of each weight to its value in the base model, so that a larger
-    /// value keeps the model closer to the base. Steps are small, so only
-    /// values from about 10 hold a tuned model back noticeably.
+    /// value keeps the model closer to the base. A step removes the share
+    /// `learning_rate * weight_decay`, which must be below 1.
     pub weight_decay: f32,
     /// The share of features that are set to zero at random in each window,
     /// from 0.0 to less than 1.0. It makes the model rely on more than a few
@@ -58,8 +58,8 @@ pub struct TrainConfig {
     /// The seed of the initial weights, the order of the windows, and the
     /// dropped features.
     pub seed: u64,
-    /// The number of threads, or 0 for the number that the host offers. The
-    /// trained model does not depend on it.
+    /// The number of threads, or 0 for the number that the host offers. At
+    /// most 8 are used. The trained model does not depend on it.
     pub threads: usize,
 }
 
@@ -153,6 +153,9 @@ impl TrainConfig {
         if !(self.weight_decay.is_finite() && self.weight_decay >= 0.0) {
             return invalid("weight decay is negative or not finite");
         }
+        if self.learning_rate * self.weight_decay >= 1.0 {
+            return invalid("learning rate times weight decay is not below 1");
+        }
         if !(0.0..1.0).contains(&self.input_dropout) {
             return invalid("input dropout is not within 0.0 to 1.0");
         }
@@ -217,8 +220,10 @@ pub struct EpochReport {
     /// Whether the epoch rounded weights and activations.
     pub quantized: bool,
     /// The mean loss of the epoch over every window and category: the
-    /// binary cross-entropy of the float network, in nats, weighted by the
-    /// [costs](TrainConfig::costs) and the weights of the samples.
+    /// binary cross-entropy of the forward pass that training ran, in nats,
+    /// weighted by the [costs](TrainConfig::costs) and the weights of the
+    /// samples. It includes the dropped features, and in a quantized epoch
+    /// the rounding.
     pub loss: f64,
 }
 
@@ -481,7 +486,7 @@ impl Trainer {
         let mut quantized_weights = QuantizedWeights::new(&network.dims);
         let mut shards: Vec<Shard> = (0..SHARDS).map(|_| Shard::new(&network.dims)).collect();
         let mut order: Vec<usize> = (0..windows).collect();
-        let mut epochs = Vec::with_capacity(config.epochs as usize);
+        let mut epochs = Vec::new();
         let mut step = 0u64;
         for epoch in 0..config.epochs {
             let quantized = epoch >= config.epochs - config.quantized_epochs;
@@ -742,6 +747,13 @@ mod tests {
         for decay in [-1e-9, f32::NAN, f32::INFINITY] {
             assert!(invalid(&|config| config.weight_decay = decay));
         }
+        // A step that removes all of a weight or more overshoots.
+        assert!(invalid(&|config| config.weight_decay = 500.0));
+        assert!(invalid(&|config| {
+            config.learning_rate = 0.5;
+            config.weight_decay = 2.0;
+        }));
+        assert!(!invalid(&|config| config.weight_decay = 499.0));
         for dropout in [-0.1, 1.0, f32::NAN] {
             assert!(invalid(&|config| config.input_dropout = dropout));
         }
@@ -774,6 +786,7 @@ mod tests {
         let data = dataset(10);
         let config = TrainConfig {
             learning_rate: 1e30,
+            weight_decay: 0.0,
             input_dropout: 0.0,
             ..config(&[4])
         };

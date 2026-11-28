@@ -60,8 +60,8 @@ impl Rng {
     }
 }
 
-/// The high bits of `ln(2)`. Its low 32 bits are zero, so that its product
-/// with a small integer is exact.
+/// The high bits of `ln(2)`. Its low 21 bits are zero, so that its product
+/// with an integer below 2^21 in magnitude is exact.
 const LN2_HIGH: f64 = 6.931_471_803_691_238e-1;
 
 /// `ln(2) - LN2_HIGH`.
