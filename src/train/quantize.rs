@@ -1,7 +1,8 @@
 //! Conversion of a float network to the integer arithmetic of a model.
 
 use super::network::Network;
-use crate::model::{LayerParameters, MAX_SHIFT};
+use crate::fingerprint::FINGERPRINT_LEN;
+use crate::model::{LayerParameters, MAX_SHIFT, Model};
 
 /// The output layer stores logits in units of 1/16.
 const LOGIT_SCALE: f64 = 16.0;
@@ -92,6 +93,61 @@ fn quantize_layer(network: &Network, layer: usize, unit: f64) -> Option<LayerPar
     })
 }
 
+/// Returns the float network that computes what `model` computes, up to
+/// the rounding of activations.
+///
+/// This inverts [`quantize`]: the multiplier and the shift of an output give
+/// its weight scale, and the stored weights and bias are multiples of it.
+pub(super) fn dequantize(model: &Model) -> Network {
+    let layers: Vec<LayerParameters> = model.layers().collect();
+    let mut dims = Vec::with_capacity(layers.len() + 1);
+    dims.push(FINGERPRINT_LEN);
+    dims.extend(layers.iter().map(|layer| layer.biases.len()));
+    let mut weights = Vec::with_capacity(layers.len());
+    let mut biases = Vec::with_capacity(layers.len());
+    for (index, layer) in layers.iter().enumerate() {
+        let (inputs, outputs) = (dims[index], dims[index + 1]);
+        let unit = if index + 1 == layers.len() {
+            LOGIT_SCALE
+        } else {
+            255.0
+        };
+        // The shift is at most 62, so the power is exact.
+        let power = (1u64 << layer.shift) as f64;
+        let scales: Vec<f64> = layer
+            .multipliers
+            .iter()
+            .map(|&multiplier| f64::from(multiplier) / power * 255.0 / unit)
+            .collect();
+        let mut layer_weights = vec![0.0f32; inputs * outputs];
+        for (output, row) in layer.weights.chunks_exact(inputs).enumerate() {
+            for (input, &weight) in row.iter().enumerate() {
+                // The first layer is stored by input.
+                let position = if index == 0 {
+                    input * outputs + output
+                } else {
+                    output * inputs + input
+                };
+                layer_weights[position] = (f64::from(weight) * scales[output]) as f32;
+            }
+        }
+        weights.push(layer_weights);
+        biases.push(
+            layer
+                .biases
+                .iter()
+                .zip(&scales)
+                .map(|(&bias, &scale)| (f64::from(bias) * scale / 255.0) as f32)
+                .collect(),
+        );
+    }
+    Network {
+        dims,
+        weights,
+        biases,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -150,6 +206,75 @@ mod tests {
             // steps, more with each layer.
             assert!(worst <= 12.0, "hidden {hidden:?}: worst difference {worst}");
         }
+    }
+
+    #[test]
+    fn dequantized_models_score_like_the_model_and_quantize_back() {
+        let mut rng = Rng::new(5);
+        let mut bytes = testutil::Rng::new(6);
+        for hidden in [&[][..], &[24], &[32, 16]] {
+            let mut dims = vec![FINGERPRINT_LEN];
+            dims.extend(hidden);
+            dims.push(Category::COUNT);
+            let mut network = Network::random(&mut rng, &dims);
+            for bias in network.biases.iter_mut().flatten() {
+                *bias = (rng.uniform() - 0.5) as f32;
+            }
+            let model = Model::from_layers(quantize(&network).unwrap()).unwrap();
+            let restored = dequantize(&model);
+            assert_eq!(restored.dims, dims);
+
+            // Quantizing again gives the same weights. A multiplier or a
+            // bias can move by one step, because the scale was rounded.
+            let again = quantize(&restored).unwrap();
+            for (first, second) in model.layers().zip(&again) {
+                assert_eq!(first.shift, second.shift);
+                assert_eq!(first.weights, second.weights);
+                for (a, b) in first.multipliers.iter().zip(&second.multipliers) {
+                    assert!((a - b).abs() <= 64, "multipliers {a} and {b}");
+                }
+                for (a, b) in first.biases.iter().zip(&second.biases) {
+                    assert!((a - b).abs() <= 1, "biases {a} and {b}");
+                }
+            }
+
+            let mut worst = 0.0f64;
+            for _ in 0..30 {
+                let mut array = [0u8; FINGERPRINT_LEN];
+                for _ in 0..200 {
+                    let mut pair = [0u8; 3];
+                    bytes.fill(&mut pair);
+                    let index =
+                        usize::from(u16::from_le_bytes([pair[0], pair[1]])) % FINGERPRINT_LEN;
+                    array[index] = pair[2];
+                }
+                let fingerprint = Fingerprint::from_array(array);
+                let (indices, values) = features(&fingerprint);
+                let logits = restored.logits((&indices, &values));
+                let scores = model.infer(Verified::SCALAR, &fingerprint);
+                for (logit, &score) in logits.iter().zip(scores.as_array()) {
+                    let expected = 255.0 * sigmoid(f64::from(*logit));
+                    worst = worst.max((expected - f64::from(score)).abs());
+                }
+            }
+            // Only the rounding of activations and of the last shift is
+            // left, which is less than the rounding of weights.
+            assert!(worst <= 6.0, "hidden {hidden:?}: worst difference {worst}");
+        }
+    }
+
+    #[test]
+    fn a_layer_without_multipliers_dequantizes_to_zero() {
+        let layer = LayerParameters {
+            shift: 1,
+            biases: vec![5; Category::COUNT],
+            multipliers: vec![0; Category::COUNT],
+            weights: vec![3; Category::COUNT * FINGERPRINT_LEN],
+        };
+        let network = dequantize(&Model::from_layers(vec![layer]).unwrap());
+        assert!(network.weights[0].iter().all(|&weight| weight == 0.0));
+        assert!(network.biases[0].iter().all(|&bias| bias == 0.0));
+        assert!(quantize(&network).is_some());
     }
 
     #[test]
