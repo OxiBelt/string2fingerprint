@@ -2,7 +2,8 @@ name: Sanitizers
 
 # Runs the tests under AddressSanitizer, which also checks for leaks, on
 # native x86-64 and Arm64 runners, so that every SIMD kernel that the CPU
-# supports reads only memory that it may read. Sanitizers need a nightly
+# supports reads only memory that it may read. On x86-64 the standard
+# library is rebuilt with the sanitizer too. Sanitizers need a nightly
 # toolchain. The date is pinned, so that a result does not depend on the
 # day it ran. Move it forward from time to time.
 
@@ -33,15 +34,15 @@ jobs:
           - arch: x86_64
             runner: ubuntu-26.04
             build_std: -Zbuild-std
-          # On Arm64, a test binary with a rebuilt standard library crashed
-          # with SIGSEGV before any test ran, while a program with the
-          # shipped library starts. The crate is instrumented either way.
+          # On Arm64, any program built with a rebuilt standard library
+          # crashes with SIGSEGV on this nightly, even one without the
+          # crate, so the shipped library is linked. The crate is
+          # instrumented either way.
           - arch: aarch64
             runner: ubuntu-26.04-arm
             build_std: ""
     env:
       RUSTFLAGS: -Zsanitizer=address
-      RUSTDOCFLAGS: -Zsanitizer=address
       ASAN_OPTIONS: detect_leaks=1
     steps:
       - name: Check out source
@@ -74,16 +75,17 @@ jobs:
           rustc --version --verbose
 
       - name: Check that the sanitizer runtime starts
-        # A program without the crate, so that a toolchain or runner
-        # problem is told apart from a finding in the crate.
+        # A crate without this one, built the same way, so that a toolchain
+        # or runner problem is told apart from a finding in this crate.
         env:
           ARCH: ${{ matrix.arch }}
+          BUILD_STD: ${{ matrix.build_std }}
         run: |
           echo "page size $(getconf PAGESIZE), kernel $(uname -r)"
           dir="$(mktemp -d)"
-          echo 'fn main() { println!("sanitizer runtime started"); }' > "$dir/main.rs"
-          rustc -Zsanitizer=address --target "$ARCH-unknown-linux-gnu" -o "$dir/main" "$dir/main.rs"
-          ASAN_OPTIONS=verbosity=1 "$dir/main"
+          cargo new --quiet --vcs none --name probe "$dir/probe"
+          ASAN_OPTIONS=verbosity=1 cargo run --quiet ${BUILD_STD:+"$BUILD_STD"} \
+            --target "$ARCH-unknown-linux-gnu" --manifest-path "$dir/probe/Cargo.toml"
           rm -r "$dir"
 
       - name: Report the kernel backends that the tests execute
@@ -98,8 +100,8 @@ jobs:
         env:
           ARCH: ${{ matrix.arch }}
           BUILD_STD: ${{ matrix.build_std }}
-        # Documentation tests are left out, since rustdoc would need the
-        # same flags for every test it builds.
+        # Documentation tests are left out. They would be built without
+        # the sanitizer.
         run: cargo test ${BUILD_STD:+"$BUILD_STD"} --target "$ARCH-unknown-linux-gnu" --all-features --locked --lib --tests
 
       - name: Run the kernel self-test under AddressSanitizer

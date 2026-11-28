@@ -120,8 +120,10 @@ RUSTUP_TOOLCHAIN=beta cargo test --all-features --locked
 cargo test --locked --features train
 ```
 
-AddressSanitizer needs a nightly toolchain with `rust-src`, and checks the
-memory accesses of every kernel that the CPU supports:
+AddressSanitizer needs a nightly toolchain, and checks the memory accesses of
+every kernel that the CPU supports. On x86-64, CI also rebuilds the standard
+library with it, which needs `rust-src`. On Arm64 the pinned nightly crashes
+with a rebuilt standard library, so CI leaves out `-Zbuild-std` there:
 
 ```sh
 rustup toolchain install nightly-2026-11-28 --profile minimal --component rust-src
