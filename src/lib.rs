@@ -22,6 +22,7 @@ compile_error!("`string2fingerprint` supports Linux targets only");
 mod backend;
 mod category;
 mod category_set;
+pub mod eval;
 pub mod fingerprint;
 mod kernel;
 pub mod model;

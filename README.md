@@ -48,6 +48,31 @@ if !flagged.is_empty() {
 }
 ```
 
+To choose those thresholds from labeled samples of your own traffic, record
+their scores and labels in an `Evaluation` and calibrate each category, here
+to the lowest threshold that flags at most 0.1% of the samples without its
+label:
+
+```rust
+use string2fingerprint::eval::{Evaluation, Objective};
+use string2fingerprint::{CategorySet, Scorer, Threshold, Thresholds};
+
+let scorer = Scorer::new();
+let samples: &[(&[u8], CategorySet)] = &[]; // Your labeled samples.
+let mut evaluation = Evaluation::new();
+for &(input, labels) in samples {
+    evaluation.record(scorer.score(input), labels);
+}
+let thresholds = evaluation.thresholds(
+    Objective::MaxFalsePositiveRate(0.001),
+    Thresholds::uniform(Threshold::at(192)),
+);
+```
+
+A category without negative samples keeps the fallback threshold. Calibrate
+on samples that were not used to train the model, and check the result on
+others.
+
 `Scorer::score` accepts any bytes of any length. It never fails or panics,
 allocates no heap memory, and runs in time linear in the input length. A
 score is an integer from 0 to 255. It is a model confidence, not a calibrated
