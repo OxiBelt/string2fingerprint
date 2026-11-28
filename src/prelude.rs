@@ -10,6 +10,8 @@
 
 pub use crate::detect::{Detection, DetectionStream, Detector, Preset};
 pub use crate::model::EmbeddedModel;
+#[cfg(feature = "tokio")]
+pub use crate::tokio::{AsyncDetector, AsyncScorer};
 pub use crate::{
     Backend, Category, CategorySet, ScoreStream, Scorer, ScorerError, Scores, Threshold, Thresholds,
 };
