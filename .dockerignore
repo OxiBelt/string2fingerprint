@@ -1,0 +1,5 @@
+# The image in `tests/docker/` builds from the tracked sources only.
+.git/
+target/
+tests/downstream/target/
+**/__pycache__/

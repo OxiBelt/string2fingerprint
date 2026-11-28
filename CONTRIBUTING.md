@@ -16,6 +16,7 @@ request notes. Run the commands in this guide from the repository root.
 | `src/` | The Rust library. | Library code or crate-level documentation changes. |
 | `docs/` | The design document. | A contract or the specified behavior changes. |
 | `tests/downstream/` | A dependent crate that trains its model while it is compiled. | The `build` feature or the macros that embed a built model change. |
+| `tests/docker/` | The image and script of the end-to-end check in a container. | A program, its options, or its output change, or the pinned toolchain moves. |
 | `tests/scripts/` | Markdown checker and regression tests. | Documentation validation changes. |
 | `.github/workflows/` | CI workflows. | Runners or CI checks change. |
 | `README.md` | Project status and contributor entry points. | Setup, usage, or the project overview changes. |
@@ -53,6 +54,17 @@ dependent crate, with a lock file of its own:
 ```sh
 cargo test --locked --manifest-path tests/downstream/Cargo.toml
 cargo clippy --all-targets --locked --manifest-path tests/downstream/Cargo.toml -- -D warnings
+```
+
+The end-to-end check builds the image of `tests/docker/Dockerfile` from the
+working tree and runs the dependent crate and the examples in containers
+without a network, as a user without privileges, on a read-only file system.
+It needs Docker and Python 3. The Rust image provides the toolchain that
+`rust-toolchain.toml` pins, and the script fails when the two differ, so move
+both together:
+
+```sh
+tests/docker/e2e.sh
 ```
 
 Use Python 3 for documentation checks and for the tests of the training
