@@ -462,7 +462,8 @@ impl Layer {
 
 /// A validated quantized network.
 ///
-/// `Debug` shows the layer sizes and the checksum, not the parameters.
+/// `Debug` shows the layer sizes and the number of parameters, not the
+/// parameters, and reads no weight.
 #[derive(Clone, PartialEq, Eq)]
 pub struct Model {
     /// Never empty. Consecutive dimensions match, the first layer has
@@ -481,7 +482,7 @@ impl fmt::Debug for Model {
         }
         f.debug_struct("Model")
             .field("layer_sizes", &&layers[..count])
-            .field("checksum", &format_args!("{:#010x}", self.checksum()))
+            .field("parameters", &self.parameter_count())
             .finish_non_exhaustive()
     }
 }
@@ -1274,8 +1275,8 @@ pub(crate) mod tests {
         assert_eq!(
             debug,
             format!(
-                "Model {{ layer_sizes: [64, 64, 8], checksum: {:#010x}, .. }}",
-                model.checksum()
+                "Model {{ layer_sizes: [64, 64, 8], parameters: {}, .. }}",
+                model.parameter_count()
             )
         );
         assert_eq!(
