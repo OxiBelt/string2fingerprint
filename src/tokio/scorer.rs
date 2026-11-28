@@ -1,10 +1,14 @@
 //! The asynchronous counterpart of [`Scorer`].
 
+use core::future::Future;
+use std::io;
 use std::sync::Arc;
 use std::thread;
 
+use ::tokio::io::AsyncRead;
+
 use super::offload::Job;
-use super::{DEFAULT_INLINE_LIMIT, Offload, Parallel};
+use super::{AsyncScoreStream, DEFAULT_INLINE_LIMIT, Offload, Parallel};
 use crate::fingerprint::{BLOCK_LEN, MIN_INPUT_LEN};
 use crate::model::{EmbeddedModel, Logits, Model};
 use crate::{Scorer, Scores, WindowScores};
@@ -218,6 +222,48 @@ impl AsyncScorer {
                 .collect()
         };
         Parallel::new(jobs)
+    }
+
+    /// Reads `reader` to its end without holding the whole input, and
+    /// returns [`Scorer::score`] of the bytes read.
+    ///
+    /// The bytes go through an [`AsyncScoreStream`]: each 64 KiB is scored
+    /// on Tokio's blocking pool while the next is read. Work is linear in
+    /// the number of bytes read, and a reader that never ends is read
+    /// forever, so bound an untrusted source, for example with
+    /// [`AsyncReadExt::take`](https://docs.rs/tokio/1/tokio/io/trait.AsyncReadExt.html#method.take):
+    ///
+    /// ```
+    /// use string2fingerprint::tokio::AsyncScorer;
+    /// use tokio::io::AsyncReadExt;
+    ///
+    /// # #[tokio::main(flavor = "current_thread")]
+    /// # async fn main() -> std::io::Result<()> {
+    /// let body: &[u8] = b"comment=<script>alert(1)</script>";
+    /// let scores = AsyncScorer::new().score_reader(body.take(1 << 20)).await?;
+    /// # let _ = scores;
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns the first error of `reader` other than
+    /// [`io::ErrorKind::Interrupted`], which is retried, and the bytes read
+    /// so far are not scored.
+    pub fn score_reader<R>(&self, reader: R) -> impl Future<Output = io::Result<Scores>> + use<R>
+    where
+        R: AsyncRead + Unpin,
+    {
+        let mut stream = self.stream();
+        async move { stream.read_to_end(reader).await }
+    }
+
+    /// Returns a stream that scores an input that arrives in parts with
+    /// this scorer. See [`AsyncScoreStream`].
+    #[must_use]
+    pub fn stream(&self) -> AsyncScoreStream {
+        AsyncScoreStream::new(Arc::clone(&self.scorer), self.inline_limit)
     }
 
     /// Runs [`Scorer::kernel_self_test`] on Tokio's blocking pool.
