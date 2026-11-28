@@ -1,12 +1,16 @@
 //! The scoring entry point.
 
 use core::fmt;
+use core::iter::FusedIterator;
+use core::ops::Range;
+use std::io;
+use std::thread;
 
 use crate::backend::{UnsupportedBackend, Verified};
-use crate::fingerprint::{Fingerprint, fingerprints};
+use crate::fingerprint::{Fingerprint, Fingerprints, fingerprints, window_range};
 use crate::kernel::{Kernel, selftest};
 use crate::model::{EmbeddedModel, Logits, Model, ModelError, Trace};
-use crate::{Backend, Scores};
+use crate::{Backend, ScoreStream, Scores};
 
 /// Scores untrusted bytes with a [`Model`].
 ///
@@ -207,6 +211,161 @@ impl Scorer {
         scores
     }
 
+    /// Scores the fields of one message, such as the path, the query, and
+    /// the header values of a request, and returns the highest score of
+    /// any field in each category.
+    ///
+    /// Each field is scored on its own, so no window spans two fields and
+    /// the result does not depend on their order. No field gives
+    /// [`Scores::ZERO`].
+    ///
+    /// ```
+    /// use string2fingerprint::{Category, Scorer};
+    ///
+    /// let scorer = Scorer::new();
+    /// let fields: [&[u8]; 3] = [b"/search", b"q=shoes", b"X-Id: 1\r\nSet-Cookie: a=b"];
+    /// let scores = scorer.score_fields(fields);
+    /// assert_eq!(scores, scorer.score(fields[2]).max_with(scorer.score(fields[1])).max_with(scorer.score(fields[0])));
+    /// ```
+    #[must_use]
+    pub fn score_fields<I>(&self, fields: I) -> Scores
+    where
+        I: IntoIterator,
+        I::Item: AsRef<[u8]>,
+    {
+        fields.into_iter().fold(Scores::ZERO, |scores, field| {
+            scores.max_with(self.score(field.as_ref()))
+        })
+    }
+
+    /// Scores each input in order, lazily.
+    ///
+    /// Each item is [`Scorer::score`] of one input. The iterator allocates
+    /// nothing.
+    pub fn score_each<'a, I>(&'a self, inputs: I) -> impl Iterator<Item = Scores> + 'a
+    where
+        I: IntoIterator,
+        I::Item: AsRef<[u8]>,
+        I::IntoIter: 'a,
+    {
+        inputs.into_iter().map(|input| self.score(input.as_ref()))
+    }
+
+    /// Scores each input and returns the scores in input order.
+    ///
+    /// Only the returned vector is allocated.
+    #[must_use]
+    pub fn score_batch<I>(&self, inputs: I) -> Vec<Scores>
+    where
+        I: IntoIterator,
+        I::Item: AsRef<[u8]>,
+    {
+        self.score_each(inputs).collect()
+    }
+
+    /// Scores each input on up to `threads` threads and returns the scores
+    /// in input order, which equal those of [`Scorer::score_batch`].
+    ///
+    /// `threads` of 0 uses [`std::thread::available_parallelism`]. Each
+    /// thread scores one contiguous share of the inputs, and the call
+    /// returns when every thread has finished. With one thread, or one
+    /// input, no thread is started.
+    ///
+    /// # Panics
+    ///
+    /// When the operating system cannot start a thread.
+    #[must_use]
+    pub fn score_parallel<T>(&self, inputs: &[T], threads: usize) -> Vec<Scores>
+    where
+        T: AsRef<[u8]> + Sync,
+    {
+        let threads = if threads == 0 {
+            thread::available_parallelism().map_or(1, usize::from)
+        } else {
+            threads
+        };
+        let mut scores = vec![Scores::ZERO; inputs.len()];
+        let threads = threads.min(inputs.len()).max(1);
+        if threads == 1 {
+            for (input, score) in inputs.iter().zip(&mut scores) {
+                *score = self.score(input.as_ref());
+            }
+            return scores;
+        }
+        let share = inputs.len().div_ceil(threads);
+        thread::scope(|scope| {
+            for (inputs, scores) in inputs.chunks(share).zip(scores.chunks_mut(share)) {
+                scope.spawn(move || {
+                    for (input, score) in inputs.iter().zip(scores) {
+                        *score = self.score(input.as_ref());
+                    }
+                });
+            }
+        });
+        scores
+    }
+
+    /// Scores `input` read from `reader` until its end, without holding the
+    /// whole input, and returns [`Scorer::score`] of the bytes read.
+    ///
+    /// The call reads into a buffer of 8 KiB on the stack and allocates
+    /// nothing. A read interrupted by a signal is retried.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first other error of `reader`, and the bytes read so far
+    /// are not scored.
+    pub fn score_reader<R: io::Read>(&self, mut reader: R) -> io::Result<Scores> {
+        let mut stream = self.stream();
+        let mut buffer = [0u8; 8192];
+        loop {
+            match reader.read(&mut buffer) {
+                Ok(0) => return Ok(stream.finish()),
+                Ok(read) => stream.update(&buffer[..read]),
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+                Err(error) => return Err(error),
+            }
+        }
+    }
+
+    /// Returns a stream that scores an input that arrives in parts with
+    /// this scorer. See [`ScoreStream`].
+    #[must_use]
+    pub fn stream(&self) -> ScoreStream<&Self> {
+        ScoreStream::new(self)
+    }
+
+    /// Yields the scores of every window of `input` with its input bytes,
+    /// in input order.
+    ///
+    /// The highest score of the windows in each category is
+    /// [`Scorer::score`]. The windows show where in a long input the
+    /// evidence lies. An input shorter than
+    /// [`MIN_INPUT_LEN`](crate::fingerprint::MIN_INPUT_LEN) has none.
+    ///
+    /// ```
+    /// use string2fingerprint::{Category, Scorer};
+    ///
+    /// let scorer = Scorer::new();
+    /// let mut input = vec![b'a'; 2000];
+    /// input.extend_from_slice(b"&file=../../../../etc/passwd");
+    /// let (window, score) = scorer
+    ///     .windows(&input)
+    ///     .map(|window| (window.range(), window.scores().get(Category::PathTraversal)))
+    ///     .max_by_key(|&(_, score)| score)
+    ///     .expect("the input has windows");
+    /// assert_eq!(score, scorer.score(&input).get(Category::PathTraversal));
+    /// assert!(window.end == input.len());
+    /// ```
+    pub fn windows<'a>(&'a self, input: &'a [u8]) -> Windows<'a> {
+        Windows {
+            scorer: self,
+            fingerprints: fingerprints(input),
+            len: input.len(),
+            index: 0,
+        }
+    }
+
     /// Scores one fingerprint.
     #[must_use]
     pub fn score_fingerprint(&self, fingerprint: &Fingerprint) -> Scores {
@@ -243,6 +402,86 @@ impl Scorer {
         self.model.trace(self.kernel(), fingerprint)
     }
 }
+
+impl AsRef<Self> for Scorer {
+    fn as_ref(&self) -> &Self {
+        self
+    }
+}
+
+/// The scores of one window of an input, which [`Scorer::windows`] yields.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct WindowScores {
+    index: usize,
+    range: Range<usize>,
+    scores: Scores,
+}
+
+impl WindowScores {
+    /// Returns the position of the window among the windows of the input.
+    #[must_use]
+    pub fn index(&self) -> usize {
+        self.index
+    }
+
+    /// Returns the input bytes that the window covers. See
+    /// [`window_range`].
+    #[must_use]
+    pub fn range(&self) -> Range<usize> {
+        self.range.clone()
+    }
+
+    /// Returns the scores of the window.
+    #[must_use]
+    pub fn scores(&self) -> Scores {
+        self.scores
+    }
+}
+
+/// The iterator returned by [`Scorer::windows`].
+#[derive(Clone)]
+pub struct Windows<'a> {
+    scorer: &'a Scorer,
+    fingerprints: Fingerprints<'a>,
+    len: usize,
+    index: usize,
+}
+
+/// Shows the windows left and nothing derived from the input.
+impl fmt::Debug for Windows<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Windows")
+            .field("remaining", &self.fingerprints.len())
+            .finish_non_exhaustive()
+    }
+}
+
+impl Iterator for Windows<'_> {
+    type Item = WindowScores;
+
+    fn next(&mut self) -> Option<WindowScores> {
+        let fingerprint = self.fingerprints.next_window()?;
+        let scores = self.scorer.score_fingerprint(fingerprint);
+        let index = self.index;
+        self.index += 1;
+        // `fingerprints` yields exactly the windows that `window_range`
+        // describes, so the range exists.
+        let range = window_range(self.len, index)?;
+        Some(WindowScores {
+            index,
+            range,
+            scores,
+        })
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.fingerprints.size_hint()
+    }
+}
+
+impl ExactSizeIterator for Windows<'_> {}
+
+impl FusedIterator for Windows<'_> {}
 
 /// The model that a [`ScorerBuilder`] loads.
 #[derive(Clone)]
@@ -532,6 +771,119 @@ mod tests {
             UnsupportedBackend(unsupported).to_string()
         );
         assert_eq!(Scorer::from_bytes(b"").unwrap_err(), ModelError::Truncated);
+    }
+
+    fn random_inputs(seed: u64) -> Vec<Vec<u8>> {
+        let mut rng = Rng::new(seed);
+        [0, 1, 2, 40, BLOCK_LEN, 3 * BLOCK_LEN + 7, 9, 700]
+            .into_iter()
+            .map(|len| {
+                let mut input = vec![0u8; len];
+                rng.fill(&mut input);
+                input
+            })
+            .collect()
+    }
+
+    #[test]
+    fn batches_score_each_input() {
+        let scorer = scorer(14);
+        let inputs = random_inputs(15);
+        let expected: Vec<Scores> = inputs.iter().map(|input| scorer.score(input)).collect();
+        assert_eq!(scorer.score_batch(&inputs), expected);
+        assert!(scorer.score_each(&inputs).eq(expected.iter().copied()));
+        for threads in [0, 1, 2, 3, 8, 100] {
+            assert_eq!(
+                scorer.score_parallel(&inputs, threads),
+                expected,
+                "{threads} threads"
+            );
+        }
+        let none: [&[u8]; 0] = [];
+        assert!(scorer.score_parallel(&none, 4).is_empty());
+        assert_eq!(scorer.score_fields(none), Scores::ZERO);
+        let combined = expected
+            .iter()
+            .fold(Scores::ZERO, |all, &scores| all.max_with(scores));
+        assert_eq!(scorer.score_fields(&inputs), combined);
+        assert_eq!(scorer.score_fields(inputs.iter().rev()), combined);
+    }
+
+    #[test]
+    fn windows_cover_the_input_and_give_its_score() {
+        let scorer = scorer(16);
+        for input in random_inputs(17) {
+            let windows: Vec<WindowScores> = scorer.windows(&input).collect();
+            assert_eq!(windows.len(), crate::fingerprint::window_count(input.len()));
+            let mut combined = Scores::ZERO;
+            for (index, (window, fingerprint)) in
+                windows.iter().zip(fingerprints(&input)).enumerate()
+            {
+                assert_eq!(window.index(), index);
+                assert_eq!(Some(window.range()), window_range(input.len(), index));
+                assert_eq!(window.scores(), scorer.score_fingerprint(&fingerprint));
+                combined = combined.max_with(window.scores());
+            }
+            assert_eq!(combined, scorer.score(&input));
+            let mut iter = scorer.windows(&input);
+            assert_eq!(iter.len(), windows.len());
+            assert_eq!(
+                format!("{iter:?}"),
+                format!("Windows {{ remaining: {}, .. }}", windows.len())
+            );
+            iter.by_ref().for_each(drop);
+            assert!(iter.next().is_none());
+        }
+    }
+
+    /// A reader that returns a few bytes at a time and is interrupted once.
+    struct Trickle<'a> {
+        input: &'a [u8],
+        interrupted: bool,
+        fail: bool,
+    }
+
+    impl io::Read for Trickle<'_> {
+        fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+            if !self.interrupted {
+                self.interrupted = true;
+                return Err(io::ErrorKind::Interrupted.into());
+            }
+            if self.fail && self.input.len() < 100 {
+                return Err(io::ErrorKind::BrokenPipe.into());
+            }
+            let take = self.input.len().min(buffer.len()).min(77);
+            buffer[..take].copy_from_slice(&self.input[..take]);
+            self.input = &self.input[take..];
+            Ok(take)
+        }
+    }
+
+    #[test]
+    fn readers_score_like_the_whole_input() {
+        let scorer = scorer(18);
+        for input in random_inputs(19) {
+            let reader = Trickle {
+                input: &input,
+                interrupted: false,
+                fail: false,
+            };
+            assert_eq!(scorer.score_reader(reader).unwrap(), scorer.score(&input));
+            assert_eq!(
+                scorer.score_reader(&input[..]).unwrap(),
+                scorer.score(&input)
+            );
+        }
+        let input = vec![b'%'; 500];
+        let reader = Trickle {
+            input: &input,
+            interrupted: false,
+            fail: true,
+        };
+        assert_eq!(
+            scorer.score_reader(reader).unwrap_err().kind(),
+            io::ErrorKind::BrokenPipe
+        );
     }
 
     #[test]

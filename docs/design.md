@@ -59,6 +59,14 @@ Inputs longer than one window are scored window by window. The score of the
 input in a category is the highest score of any window in that category, so
 padding an input with harmless text does not dilute a payload.
 
+The scores of each window, with the input bytes it covers, show where in a
+long input the evidence lies. An input that arrives in parts scores the same
+as the whole input, however it is split. While it arrives, the highest score
+of the windows completed so far never decreases and never exceeds the final
+score, so a caller can act before the input ends. The fields of one message
+can be scored apart and combined by their highest score in each category, so
+that no window spans two fields.
+
 ### Thresholds
 
 A threshold turns a score into a decision. A threshold of `t` flags every
