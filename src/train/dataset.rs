@@ -30,6 +30,7 @@ pub const WINDOW_LEN: usize = 2 * BLOCK_LEN;
 pub struct Sample<'a> {
     pub(super) input: &'a [u8],
     pub(super) labels: CategorySet,
+    pub(super) weight: f32,
     pub(super) every_window: bool,
 }
 
@@ -40,6 +41,7 @@ impl<'a> Sample<'a> {
         Self {
             input,
             labels: labels.into(),
+            weight: 1.0,
             every_window: false,
         }
     }
@@ -48,6 +50,19 @@ impl<'a> Sample<'a> {
     #[must_use]
     pub fn benign(input: &'a [u8]) -> Self {
         Self::new(input, CategorySet::EMPTY)
+    }
+
+    /// Sets how much the sample counts in the training loss, in place of 1.
+    ///
+    /// A weight of 3 counts like three copies of the sample. Give a higher
+    /// weight to the samples that matter most, for example a benign request
+    /// that a model wrongly flagged in production, or an attack that it
+    /// missed. The weight multiplies the [costs](super::Costs) of the
+    /// trainer. It must be finite and not negative.
+    #[must_use]
+    pub fn weighted(mut self, weight: f32) -> Self {
+        self.weight = weight;
+        self
     }
 
     /// Applies the labels to every window of an input that is longer than
@@ -78,6 +93,12 @@ impl<'a> Sample<'a> {
     pub fn labels(&self) -> CategorySet {
         self.labels
     }
+
+    /// Returns the weight.
+    #[must_use]
+    pub fn weight(&self) -> f32 {
+        self.weight
+    }
 }
 
 /// The reason samples were not added to a [`Dataset`].
@@ -89,6 +110,8 @@ pub enum DatasetError {
     /// A labeled input has more than one window. See
     /// [`Sample::label_every_window`].
     LabeledInputTooLong,
+    /// The weight of a sample is negative or not finite.
+    InvalidWeight,
     /// A corpus ends inside a record.
     TruncatedCorpus,
     /// A line of labeled text has no tab or names an unknown category. The
@@ -100,6 +123,7 @@ impl fmt::Display for DatasetError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::LabeledInputTooLong => f.write_str("labeled input is longer than one window"),
+            Self::InvalidWeight => f.write_str("sample weight is negative or not finite"),
             Self::TruncatedCorpus => f.write_str("corpus ends inside a record"),
             Self::InvalidLine(line) => {
                 write!(f, "line {line} is not labels, a tab, and a payload")
@@ -131,7 +155,7 @@ impl core::error::Error for DatasetError {}
 /// assert_eq!(data.benign(), 2);
 /// # Ok::<(), string2fingerprint::train::DatasetError>(())
 /// ```
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Dataset {
     /// The features of window `w` are at `starts[w]..starts[w + 1]` of
     /// `indices` and `values`. Holds one more element than there are
@@ -143,6 +167,8 @@ pub struct Dataset {
     values: Vec<u8>,
     /// The labels of each window.
     labels: Vec<CategorySet>,
+    /// The weight of each window, which is finite and not negative.
+    weights: Vec<f32>,
     /// The windows of sample `s` are `sample_ends[s - 1]..sample_ends[s]`.
     sample_ends: Vec<usize>,
 }
@@ -203,16 +229,20 @@ impl Dataset {
     ///
     /// Returns [`DatasetError::LabeledInputTooLong`] for a labeled input
     /// with more than one window, which is one longer than [`WINDOW_LEN`]
-    /// bytes, unless the sample chose [`Sample::label_every_window`]. The
-    /// dataset is unchanged then.
+    /// bytes, unless the sample chose [`Sample::label_every_window`], and
+    /// [`DatasetError::InvalidWeight`] for a weight that is negative or not
+    /// finite. The dataset is unchanged then.
     pub fn push(&mut self, sample: Sample<'_>) -> Result<usize, DatasetError> {
+        if !(sample.weight.is_finite() && sample.weight >= 0.0) {
+            return Err(DatasetError::InvalidWeight);
+        }
         let windows = window_count(sample.input.len());
         if windows > 1 && !sample.labels.is_empty() && !sample.every_window {
             return Err(DatasetError::LabeledInputTooLong);
         }
         let mut remaining = fingerprints(sample.input);
         while let Some(fingerprint) = remaining.next_window() {
-            self.push_window(fingerprint, sample.labels);
+            self.push_window(fingerprint, sample.labels, sample.weight);
         }
         if windows > 0 {
             self.sample_ends.push(self.labels.len());
@@ -225,7 +255,7 @@ impl Dataset {
     /// This is for callers that locate the window of a payload in a long
     /// input themselves, with [`fingerprints`].
     pub fn push_fingerprint(&mut self, fingerprint: &Fingerprint, labels: impl Into<CategorySet>) {
-        self.push_window(fingerprint, labels.into());
+        self.push_window(fingerprint, labels.into(), 1.0);
         self.sample_ends.push(self.labels.len());
     }
 
@@ -234,10 +264,37 @@ impl Dataset {
         for sample in 0..other.samples() {
             for window in other.sample_windows(sample) {
                 let (indices, values) = other.window(window);
-                self.push_features(indices, values, other.labels[window]);
+                self.push_features(indices, values, other.labels[window], other.weights[window]);
             }
             self.sample_ends.push(self.labels.len());
         }
+    }
+
+    /// Multiplies the weight of every sample by `factor`.
+    ///
+    /// To weigh the samples of one source, read them into a dataset of
+    /// their own, scale it, and add it with
+    /// [`Dataset::extend_from_dataset`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DatasetError::InvalidWeight`] when `factor` is negative or
+    /// not finite, or when a weight would no longer be finite. The dataset
+    /// is unchanged then.
+    pub fn scale_weights(&mut self, factor: f32) -> Result<(), DatasetError> {
+        let valid = factor.is_finite()
+            && factor >= 0.0
+            && self
+                .weights
+                .iter()
+                .all(|weight| (weight * factor).is_finite());
+        if !valid {
+            return Err(DatasetError::InvalidWeight);
+        }
+        for weight in &mut self.weights {
+            *weight *= factor;
+        }
+        Ok(())
     }
 
     /// Adds each line of `text` as one sample with the same labels, and
@@ -355,7 +412,7 @@ impl Dataset {
             for sample in samples {
                 for window in self.sample_windows(sample) {
                     let (indices, values) = self.window(window);
-                    part.push_features(indices, values, self.labels[window]);
+                    part.push_features(indices, values, self.labels[window], self.weights[window]);
                 }
                 part.sample_ends.push(part.labels.len());
             }
@@ -427,6 +484,11 @@ impl Dataset {
         self.labels[window]
     }
 
+    /// Returns the weight of `window`.
+    pub(super) fn window_weight(&self, window: usize) -> f32 {
+        self.weights[window]
+    }
+
     /// Returns `window` as a fingerprint.
     pub(super) fn fingerprint(&self, window: usize) -> Fingerprint {
         let mut features = [0u8; FINGERPRINT_LEN];
@@ -437,7 +499,7 @@ impl Dataset {
         Fingerprint::from_array(features)
     }
 
-    fn push_window(&mut self, fingerprint: &Fingerprint, labels: CategorySet) {
+    fn push_window(&mut self, fingerprint: &Fingerprint, labels: CategorySet, weight: f32) {
         self.open();
         for (index, &value) in fingerprint.as_array().iter().enumerate() {
             if value != 0 {
@@ -446,14 +508,14 @@ impl Dataset {
                 self.values.push(value);
             }
         }
-        self.close(labels);
+        self.close(labels, weight);
     }
 
-    fn push_features(&mut self, indices: &[u16], values: &[u8], labels: CategorySet) {
+    fn push_features(&mut self, indices: &[u16], values: &[u8], labels: CategorySet, weight: f32) {
         self.open();
         self.indices.extend_from_slice(indices);
         self.values.extend_from_slice(values);
-        self.close(labels);
+        self.close(labels, weight);
     }
 
     fn open(&mut self) {
@@ -462,9 +524,10 @@ impl Dataset {
         }
     }
 
-    fn close(&mut self, labels: CategorySet) {
+    fn close(&mut self, labels: CategorySet, weight: f32) {
         self.starts.push(self.indices.len());
         self.labels.push(labels);
+        self.weights.push(weight);
     }
 
     /// Runs `add` and returns the number of samples it added, or undoes its
@@ -482,6 +545,7 @@ impl Dataset {
             Ok(()) => Ok(self.sample_ends.len() - checkpoint.samples),
             Err(error) => {
                 self.labels.truncate(checkpoint.windows);
+                self.weights.truncate(checkpoint.windows);
                 self.starts.truncate(checkpoint.windows + 1);
                 self.indices.truncate(checkpoint.features);
                 self.values.truncate(checkpoint.features);
@@ -575,6 +639,58 @@ mod tests {
         for window in 0..3 {
             assert_eq!(data.window_labels(window), Category::Malformed.into());
         }
+    }
+
+    #[test]
+    fn weights_are_stored_for_each_window_and_validated() {
+        let mut data = Dataset::new();
+        let long = vec![b'a'; WINDOW_LEN + 1];
+        assert_eq!(Sample::benign(b"ab").weight(), 1.0);
+        data.push(Sample::benign(b"plain")).unwrap();
+        data.push(Sample::benign(&long).weighted(2.5)).unwrap();
+        data.push(Sample::new(b"' OR 1=1", Category::SqlInjection).weighted(0.0))
+            .unwrap();
+        data.push_fingerprint(&Fingerprint::ZERO, CategorySet::EMPTY);
+        let weights: Vec<f32> = (0..data.windows())
+            .map(|window| data.window_weight(window))
+            .collect();
+        assert_eq!(weights, [1.0, 2.5, 2.5, 0.0, 1.0]);
+
+        for weight in [-1.0, -0.0001, f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            let before = data.clone();
+            let sample = Sample::benign(b"plain").weighted(weight);
+            assert_eq!(
+                data.push(sample),
+                Err(DatasetError::InvalidWeight),
+                "{weight}"
+            );
+            assert_eq!(data, before);
+        }
+
+        let mut scaled = data.clone();
+        assert_eq!(scaled.scale_weights(2.0), Ok(()));
+        let weights: Vec<f32> = (0..scaled.windows())
+            .map(|window| scaled.window_weight(window))
+            .collect();
+        assert_eq!(weights, [2.0, 5.0, 5.0, 0.0, 2.0]);
+        for factor in [-1.0, f32::NAN, f32::INFINITY, f32::MAX] {
+            let before = scaled.clone();
+            assert_eq!(
+                scaled.scale_weights(factor),
+                Err(DatasetError::InvalidWeight)
+            );
+            assert_eq!(scaled, before);
+        }
+        assert_eq!(Dataset::new().scale_weights(3.0), Ok(()));
+
+        let (rest, held_out) = data.split(0.5, 3);
+        let mut joined = rest.clone();
+        joined.extend_from_dataset(&held_out);
+        let mut joined: Vec<f32> = (0..joined.windows())
+            .map(|window| joined.window_weight(window))
+            .collect();
+        joined.sort_by(f32::total_cmp);
+        assert_eq!(joined, [0.0, 1.0, 1.0, 2.5, 2.5]);
     }
 
     #[test]
@@ -778,6 +894,10 @@ mod tests {
         assert_eq!(
             DatasetError::LabeledInputTooLong.to_string(),
             "labeled input is longer than one window"
+        );
+        assert_eq!(
+            DatasetError::InvalidWeight.to_string(),
+            "sample weight is negative or not finite"
         );
         assert_eq!(
             DatasetError::TruncatedCorpus.to_string(),

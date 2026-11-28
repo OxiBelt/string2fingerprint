@@ -227,6 +227,9 @@ text around it. A labeled input with more than one window is therefore
 refused unless the caller states that every window shows the labels. A benign
 input of any length is accepted, and each of its windows is benign.
 
+A sample has a weight, 1 unless the caller sets another, which multiplies the
+loss of each of its windows. A weight must be finite and not negative.
+
 The score of a sample is the highest score of any of its windows in each
 category, which is the score of its input.
 
@@ -252,6 +255,37 @@ accumulator to a stored activation, or to a logit in units of 1/16 in the
 output layer. The shift is the largest for which every multiplier of the
 layer stays within 30 bits. The result is validated like any other model
 before it is returned.
+
+### Costs
+
+The loss has one term for each category of each window. The term of a
+category that labels the window raises the score, and its weight is the cost
+of a false negative in that category. The term of a category that does not
+label the window lowers the score, and its weight is the cost of a false
+positive in that category. The terms of a window without any label are also
+multiplied by the benign weight. Each term is then multiplied by the weight
+of its sample. All costs are 1 by default, and a cost must be finite and not
+negative.
+
+A higher cost makes the model avoid that error at the expense of the opposite
+one. Costs change what the model learns, and a threshold chosen on held-out
+samples then selects the operating point. Costs do not replace that
+threshold.
+
+### Fine-Tuning
+
+Fine-tuning continues the training of a model on new samples. The float
+network starts from the stored parameters: a weight is its stored value
+divided by the scale of its output, and the scale follows from the multiplier
+and the shift. The layers stay those of the base model. Weight decay pulls
+each weight towards its value in the base model, not towards zero.
+
+A tuned model changes its scores on every text that shares features with the
+new samples. Benign samples alone lower the scores of attacks that look like
+them. The new samples must therefore include text whose scores must stay,
+and the result must be measured on held-out samples of both kinds. The
+[training tools](../tools/train/README.md#correcting-a-model) record a
+measurement of both effects.
 
 ### Determinism
 

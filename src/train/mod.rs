@@ -25,11 +25,13 @@
 //! Training data is trusted input. A dataset and a trainer allocate memory
 //! in proportion to the samples that they are given.
 
+mod costs;
 mod dataset;
 mod math;
 mod network;
 mod quantize;
 mod trainer;
 
+pub use costs::Costs;
 pub use dataset::{Dataset, DatasetError, Sample, WINDOW_LEN};
 pub use trainer::{EpochReport, TrainConfig, TrainError, TrainReport, Trained, Trainer};

@@ -10,6 +10,7 @@
 
 use std::thread;
 
+use super::costs::Costs;
 use super::dataset::Dataset;
 use super::math::{Rng, round_ties_even, sigmoid, softplus};
 use crate::{Category, CategorySet};
@@ -295,6 +296,8 @@ pub(super) struct Pass<'a> {
     pub(super) quantized: bool,
     /// The share of features that are set to zero at random.
     pub(super) dropout: f32,
+    /// The weights of the terms of the loss.
+    pub(super) costs: &'a Costs,
     /// The generator of the epoch. Each window draws from its own stream.
     pub(super) rng: &'a Rng,
     pub(super) threads: usize,
@@ -321,7 +324,8 @@ impl Shard {
 /// Their sum, in order, is the gradient of the batch.
 ///
 /// The loss of a window is the sum over the categories of the binary
-/// cross-entropy of the logit with the label. `forward_weights` are the
+/// cross-entropy of the logit with the label, each term weighted by its
+/// cost and by the weight of the window. `forward_weights` are the
 /// weights of the forward pass, which differ from those of `network` while
 /// training adapts to quantization. The gradients then pass straight
 /// through the rounding.
@@ -404,14 +408,17 @@ fn accumulate(
 
     let last = network.layers() - 1;
     let labels: CategorySet = pass.data.window_labels(window);
+    let weight = pass.data.window_weight(window);
     scratch.delta.clear();
     for (category, &logit) in Category::ALL.into_iter().zip(&scratch.pre[last]) {
         let logit = f64::from(logit);
-        let target = if labels.contains(category) { 1.0 } else { 0.0 };
-        gradients.loss += softplus(logit) - target * logit;
+        let labeled = labels.contains(category);
+        let target = if labeled { 1.0 } else { 0.0 };
+        let cost = weight * pass.costs.weight(category, labeled, labels.is_empty());
+        gradients.loss += f64::from(cost) * (softplus(logit) - target * logit);
         scratch
             .delta
-            .push(flush((sigmoid(logit) - target) as f32 * scale));
+            .push(flush(cost * (sigmoid(logit) - target) as f32 * scale));
     }
 
     for layer in (1..=last).rev() {
@@ -459,6 +466,8 @@ fn accumulate(
 pub(super) struct Adam {
     first: Gradients,
     second: Gradients,
+    /// The weights towards which weights decay, in place of zero.
+    anchor: Option<Vec<Vec<f32>>>,
     /// `BETA1` and `BETA2` to the power of the number of steps taken.
     powers: (f64, f64),
 }
@@ -472,15 +481,24 @@ impl Adam {
         Self {
             first: Gradients::new(dims),
             second: Gradients::new(dims),
+            anchor: None,
             powers: (1.0, 1.0),
         }
+    }
+
+    /// Makes weights decay towards the weights of `network` in place of
+    /// zero, so that a network that starts there stays close to it.
+    pub(super) fn anchored(mut self, network: &Network) -> Self {
+        self.anchor = Some(network.weights.clone());
+        self
     }
 
     /// Moves the parameters of `network` against the sum of the gradients
     /// of `shards`.
     ///
-    /// `weight_decay` then shrinks every weight by the share `rate *
-    /// weight_decay`. Biases do not decay.
+    /// `weight_decay` then moves every weight by the share `rate *
+    /// weight_decay` of its distance to zero, or to its anchor. Biases do
+    /// not decay.
     pub(super) fn step(
         &mut self,
         network: &mut Network,
@@ -519,6 +537,11 @@ impl Adam {
                 } else {
                     0.0
                 },
+                anchor: self
+                    .anchor
+                    .as_ref()
+                    .and_then(|anchor| anchor.get(tensor))
+                    .map(Vec::as_slice),
                 first_correction: (1.0 / (1.0 - self.powers.0)) as f32,
                 second_correction: (1.0 / (1.0 - self.powers.1)) as f32,
             };
@@ -562,6 +585,8 @@ struct Update<'a> {
     gradients: Vec<&'a [f32]>,
     rate: f32,
     decay: f32,
+    /// The values towards which the elements decay, for the whole tensor.
+    anchor: Option<&'a [f32]>,
     first_correction: f32,
     second_correction: f32,
 }
@@ -598,7 +623,18 @@ impl Update<'_> {
                 let direction = (*first * self.first_correction)
                     / ((*second * self.second_correction).sqrt() + EPSILON);
                 *parameter -= self.rate * direction;
-                *parameter -= self.decay * *parameter;
+            }
+            match self.anchor {
+                Some(anchor) => {
+                    for (parameter, &anchor) in parameters.iter_mut().zip(&anchor[range]) {
+                        *parameter -= self.decay * (*parameter - anchor);
+                    }
+                }
+                None => {
+                    for parameter in parameters.iter_mut() {
+                        *parameter -= self.decay * *parameter;
+                    }
+                }
             }
         }
     }
@@ -627,22 +663,36 @@ mod tests {
 
     /// The loss that `batch_gradients` differentiates, in 64-bit arithmetic.
     fn mean_loss(network: &Network, data: &Dataset) -> f64 {
+        weighted_mean_loss(network, data, &Costs::UNIFORM)
+    }
+
+    fn weighted_mean_loss(network: &Network, data: &Dataset, costs: &Costs) -> f64 {
         let mut loss = 0.0;
         for window in 0..data.windows() {
             let logits = network.logits(data.window(window));
+            let labels = data.window_labels(window);
             for (category, logit) in Category::ALL.into_iter().zip(logits) {
-                let target = if data.window_labels(window).contains(category) {
-                    1.0
-                } else {
-                    0.0
-                };
-                loss += softplus(f64::from(logit)) - target * f64::from(logit);
+                let labeled = labels.contains(category);
+                let target = if labeled { 1.0 } else { 0.0 };
+                let cost =
+                    data.window_weight(window) * costs.weight(category, labeled, labels.is_empty());
+                let logit = f64::from(logit);
+                loss += f64::from(cost) * (softplus(logit) - target * logit);
             }
         }
         loss / data.windows() as f64
     }
 
     fn gradients(network: &Network, data: &Dataset, threads: usize) -> Gradients {
+        weighted_gradients(network, data, &Costs::UNIFORM, threads)
+    }
+
+    fn weighted_gradients(
+        network: &Network,
+        data: &Dataset,
+        costs: &Costs,
+        threads: usize,
+    ) -> Gradients {
         let windows: Vec<usize> = (0..data.windows()).collect();
         let mut shards: Vec<Shard> = (0..SHARDS).map(|_| Shard::new(&network.dims)).collect();
         let pass = Pass {
@@ -651,6 +701,7 @@ mod tests {
             position: 0,
             quantized: false,
             dropout: 0.0,
+            costs,
             rng: &Rng::new(1),
             threads,
         };
@@ -805,6 +856,97 @@ mod tests {
     }
 
     #[test]
+    fn costs_and_weights_scale_the_terms_of_the_loss() {
+        let mut data = Dataset::new();
+        let sql = Sample::new(b"id=1' OR '1'='1' --", Category::SqlInjection);
+        data.push(sql.weighted(3.0)).unwrap();
+        data.push(Sample::benign(b"GET /index.html HTTP/1.1").weighted(0.5))
+            .unwrap();
+        data.push(Sample::new(b"../../../etc/passwd", Category::PathTraversal))
+            .unwrap();
+        let costs = Costs::UNIFORM
+            .benign(4.0)
+            .false_negative(Category::SqlInjection, 2.0)
+            .false_positive(Category::Malformed, 0.25);
+        let dims = [crate::fingerprint::FINGERPRINT_LEN, 5, Category::COUNT];
+        let mut rng = Rng::new(9);
+        let network = Network::random(&mut rng, &dims);
+        let analytic = weighted_gradients(&network, &data, &costs, 1);
+        let mean = analytic.loss / data.windows() as f64;
+        assert!((mean - weighted_mean_loss(&network, &data, &costs)).abs() < 1e-5);
+        assert!((mean - mean_loss(&network, &data)).abs() > 1e-2);
+
+        // The gradient in each output bias is the weighted error of that
+        // category, which finite differences confirm.
+        let last = network.layers() - 1;
+        for index in 0..Category::COUNT {
+            let step = 1e-3;
+            let mut moved = network.clone();
+            let mut set = |value: f32| {
+                moved.biases[last][index] = value;
+                weighted_mean_loss(&moved, &data, &costs)
+            };
+            let original = network.biases[last][index];
+            let numeric = (set(original + step) - set(original - step)) / f64::from(2.0 * step);
+            let expected = f64::from(analytic.biases[last][index]);
+            assert!(
+                (numeric - expected).abs() <= 2e-3 + 0.02 * numeric.abs(),
+                "category {index}"
+            );
+        }
+
+        // Uniform costs and unit weights leave the gradients unchanged.
+        let mut plain = Dataset::new();
+        plain.push(sql).unwrap();
+        let weighted = weighted_gradients(&network, &plain, &Costs::UNIFORM, 1);
+        let mut tripled = Dataset::new();
+        tripled.push(sql.weighted(3.0)).unwrap();
+        let heavier = weighted_gradients(&network, &tripled, &Costs::UNIFORM, 1);
+        for (plain, heavier) in weighted.biases[last].iter().zip(&heavier.biases[last]) {
+            assert!((plain * 3.0 - heavier).abs() <= 1e-6);
+        }
+        let mut ignored = Dataset::new();
+        ignored.push(sql.weighted(0.0)).unwrap();
+        let none = weighted_gradients(&network, &ignored, &Costs::UNIFORM, 1);
+        assert!(
+            none.weights
+                .iter()
+                .chain(&none.biases)
+                .flatten()
+                .all(|&gradient| gradient == 0.0)
+        );
+        assert_eq!(none.loss, 0.0);
+    }
+
+    #[test]
+    fn anchored_weights_decay_towards_the_anchor() {
+        let dims = [crate::fingerprint::FINGERPRINT_LEN, 4, Category::COUNT];
+        let anchor = Network::random(&mut Rng::new(10), &dims);
+        let mut network = Network::random(&mut Rng::new(11), &dims);
+        let start = network.clone();
+        let zero = shard(&dims, Gradients::new(&dims));
+        let mut adam = Adam::new(&dims).anchored(&anchor);
+        adam.step(&mut network, &zero, 0.5, 0.2, 1);
+        assert_eq!(network.biases, start.biases);
+        let moved = network.weights.iter().flatten();
+        let pairs = start
+            .weights
+            .iter()
+            .flatten()
+            .zip(anchor.weights.iter().flatten());
+        for (moved, (start, anchor)) in moved.zip(pairs) {
+            let expected = start - 0.1 * (start - anchor);
+            assert!((moved - expected).abs() <= 1e-6 * start.abs().max(1.0));
+        }
+        // A network at its anchor stays there.
+        let mut resting = anchor.clone();
+        Adam::new(&dims)
+            .anchored(&anchor)
+            .step(&mut resting, &zero, 0.5, 0.2, 3);
+        assert_eq!(resting, anchor);
+    }
+
+    #[test]
     fn steps_do_not_depend_on_the_thread_count() {
         let data = dataset();
         let dims = [crate::fingerprint::FINGERPRINT_LEN, 16, Category::COUNT];
@@ -821,6 +963,7 @@ mod tests {
                     position: 0,
                     quantized: false,
                     dropout: 0.2,
+                    costs: &Costs::UNIFORM,
                     rng: &Rng::new(2),
                     threads,
                 };

@@ -145,6 +145,43 @@ benign text has none. Training is deterministic: the same samples and
 settings give the same model bytes on every supported host and with any
 number of threads. `Model::from_bytes` loads the file again.
 
+`TrainConfig::costs` weighs the two kinds of error. A higher cost of false
+positives, or a higher weight of benign text, gives a model that flags less
+benign text and misses more attacks, and a higher cost of false negatives
+does the opposite. `Sample::weighted` does the same for single samples:
+
+```rust
+use string2fingerprint::train::Costs;
+
+let mut config = TrainConfig::default();
+// Wrong flags on benign text cost four times as much, and a missed
+// command injection twice as much.
+config.costs = Costs::UNIFORM
+    .benign(4.0)
+    .false_negative(Category::CommandInjection, 2.0);
+```
+
+`Trainer::fine_tune` continues the training of an existing model, such as an
+embedded one, on your corrections: benign text that it flags and attacks that
+it misses.
+
+```rust
+use string2fingerprint::model::Model;
+
+let mut corrections = Dataset::new();
+corrections.extend_from_lines(&std::fs::read("flagged_benign.txt")?, CategorySet::EMPTY)?;
+// Samples whose scores must stay, above all attacks.
+corrections.extend_from_corpus(&std::fs::read("replay.bin")?)?;
+
+let base = Model::embedded();
+let tuned = Trainer::new(TrainConfig::fine_tuning())?.fine_tune(&base, &corrections)?;
+```
+
+Benign corrections alone make the model miss attacks that look like them.
+Tune together with samples whose scores must stay, and compare the tuned
+model with the base on held-out samples. The training tools
+[measured both cases](tools/train/README.md#correcting-a-model).
+
 A model is only as good as its data. The embedded models were trained on
 600,000 generated samples, and a model trained on a few hundred samples knows
 those samples. The [design document](docs/design.md#training) specifies the

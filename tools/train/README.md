@@ -221,6 +221,47 @@ the results on the development set.
 `large` separates best on the synthetic split at three times the cost of
 `default`. `tests/model_quality.rs` holds a limit for each model.
 
+## Correcting a Model
+
+`Trainer::fine_tune` of the `train` feature continues the training of a model
+on new samples. This measurement tuned the embedded `default` model on 1,000
+generated lines of documentation that quote shell commands and SQL
+statements, which is the known false positive under [Limits](#limits). The
+lines came from a one-off generator that is not in the repository, so the
+numbers show the size of the effects and cannot be reproduced from this
+tree.
+
+Held-out lines of the same kind and lines built from other commands and
+other sentences measure the correction. The synthetic test split of seed 3,
+with 7,129 benign samples and 12,867 attacks, measures what the correction
+costs. Each column is the share flagged in any category at threshold 128,
+and the last one is the recall of `command_injection` alone.
+
+| Tuning data | Settings | Same kind of lines | Other lines | Benign test samples | Attacks | `command_injection` recall |
+| --- | --- | --- | --- | --- | --- | --- |
+| None, the base model | | 64.4% | 78.3% | 1.16% | 98.17% | 75.1% |
+| The lines alone | Preset | 22.4% | 39.4% | 0.59% | 96.65% | 39.7% |
+| The lines alone | Preset, batches of 32 | 0.4% | 20.0% | 0.27% | 94.65% | 22.9% |
+| The lines alone | Preset, weight decay 100 | 44.2% | 55.4% | 0.67% | 97.32% | 52.2% |
+| The lines and 4,998 corpus samples | Preset | 0.5% | 30.9% | 0.62% | 97.47% | 69.3% |
+| The lines and 19,998 corpus samples | Preset | 0.6% | 40.3% | 0.93% | 97.89% | 72.8% |
+
+The preset is `TrainConfig::fine_tuning()`. Batches of 32 double the number
+of steps on the same lines. The corpus samples are a split that `dataset.py`
+generated with a seed of its own, so the model saw neither them nor the test
+split before.
+
+- The lines alone remove the false positives together with the recall of
+  `command_injection`, and more steps remove more of both. The model learns
+  that the features of a shell command are benign.
+- Weight decay, which pulls the weights back to the base model, trades one
+  effect against the other. The result is worse at both than tuning together
+  with corpus samples.
+- Corpus samples keep the recall within a few points of the base model, and
+  more of them lose less recall.
+- The correction carries over to lines built from other commands only in
+  part.
+
 ## Limits
 
 - The model has not been measured on real traffic. The results above come
