@@ -273,16 +273,20 @@ and the last one is the recall of `command_injection` alone.
 | The lines and 19,998 corpus samples | Preset | 0.6% | 40.3% | 0.93% | 97.89% | 72.8% |
 
 The preset is `TrainConfig::fine_tuning()`. Batches of 32 double the number
-of steps on the same lines. With the `train` example, the last row is:
+of steps on the same lines. The corpus samples come from seed 2, the
+validation split of `models.json`, and the test split is seed 3. The default
+model was trained on neither; `train.py` uses the validation split only for
+its report.
+
+With the `train` example, the last row is the following, where `flagged.txt`
+holds the lines to correct, one on each line. The 1,000 lines of the
+measurement are not in the repository.
 
 ```sh
 python3 -B tools/train/dataset.py --seed 2 --count 20000 --out "$WORK/replay.bin"
 cargo run --release --features train --example train -- --base default \
   --benign flagged.txt --corpus "$WORK/replay.bin" --out "$WORK/tuned.s2fp"
 ```
- The corpus samples are a split that `dataset.py`
-generated with a seed of its own, so the model saw neither them nor the test
-split before.
 
 - The lines alone remove the false positives together with the recall of
   `command_injection`, and more steps remove more of both. The model learns

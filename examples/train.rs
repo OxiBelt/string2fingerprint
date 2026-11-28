@@ -21,7 +21,7 @@
 //! from random weights. `MODEL` is the name of an embedded model, such as
 //! `default`, or the path of a model file. The settings then start from
 //! `TrainConfig::fine_tuning`, and the report also shows the base model.
-//! Give `--base` before the settings that follow.
+//! `--base` must come before every setting.
 //!
 //! Settings, with the defaults of `TrainConfig`: `--hidden N[,N]...` (or
 //! `--hidden none`), `--epochs N`, `--quantized-epochs N`, `--batch-size N`,
@@ -35,9 +35,12 @@
 //! The model is written to `MODEL` in the format that `Model::from_bytes`
 //! reads. Progress and the report go to standard error. Sample bytes are
 //! never printed.
+//!
+//! `--help` prints the usage. The exit status is 2 for an invalid command
+//! line or setting, and 1 when reading, training, or writing fails.
 
 use std::env;
-use std::error::Error;
+use std::fmt;
 use std::fs;
 use std::process::ExitCode;
 
@@ -46,113 +49,238 @@ use string2fingerprint::model::{EmbeddedModel, Model};
 use string2fingerprint::train::{Costs, Dataset, EpochReport, TrainConfig, Trainer};
 use string2fingerprint::{Category, CategorySet, Scorer, Threshold};
 
-type Fallible<T> = Result<T, Box<dyn Error>>;
+const USAGE: &str =
+    "usage: train [--corpus FILE] [--benign FILE] [--labeled FILE] [OPTION]... --out MODEL";
 
-#[derive(Default)]
-struct Arguments {
-    train: Dataset,
-    test: Dataset,
-    config: TrainConfig,
-    base: Option<Model>,
-    out: Option<String>,
+/// Why the program stopped.
+enum Failure {
+    /// The command line or a setting is invalid. Exit status 2.
+    Usage(String),
+    /// Reading, training, or writing failed. Exit status 1.
+    Run(String),
+}
+
+impl Failure {
+    fn usage(message: impl fmt::Display) -> Self {
+        Self::Usage(message.to_string())
+    }
+
+    fn run(message: impl fmt::Display) -> Self {
+        Self::Run(message.to_string())
+    }
 }
 
 /// What a data file holds.
+#[derive(Clone, Copy)]
 enum Format {
     Corpus,
     Benign,
     Labeled,
 }
 
-/// Adds the samples of the file at `path` to `data` with `weight`.
-fn load(data: &mut Dataset, format: &Format, path: &str, weight: f32) -> Fallible<()> {
-    let bytes = fs::read(path)?;
-    let mut samples = Dataset::new();
-    match format {
-        Format::Corpus => samples.extend_from_corpus(&bytes)?,
-        Format::Benign => samples.extend_from_lines(&bytes, CategorySet::EMPTY)?,
-        Format::Labeled => samples.extend_from_labeled_lines(&bytes)?,
-    };
-    samples.scale_weights(weight)?;
-    data.extend_from_dataset(&samples);
-    Ok(())
+/// A data file of the command line, read only after the whole command line
+/// is valid.
+struct Source {
+    format: Format,
+    path: String,
+    weight: f32,
+}
+
+struct Options {
+    train: Vec<Source>,
+    test: Vec<Source>,
+    config: TrainConfig,
+    base: Option<String>,
+    out: String,
+}
+
+/// Parses `value` as the value of `option`.
+fn number<T: std::str::FromStr>(option: &str, value: &str) -> Result<T, Failure>
+where
+    T::Err: fmt::Display,
+{
+    value
+        .parse()
+        .map_err(|error| Failure::usage(format!("`{option} {value}`: {error}")))
+}
+
+/// Parses a weight or a cost, which must be finite and at least 0.
+fn weight(option: &str, value: &str) -> Result<f32, Failure> {
+    let weight: f32 = number(option, value)?;
+    if weight.is_finite() && weight >= 0.0 {
+        Ok(weight)
+    } else {
+        Err(Failure::usage(format!(
+            "`{option} {value}`: not a finite number of at least 0"
+        )))
+    }
 }
 
 /// Parses `CATEGORY=X` and applies it with `one`, or with `all` for the
 /// category `all`.
 fn cost(
     costs: Costs,
+    option: &str,
     value: &str,
     one: impl Fn(Costs, Category, f32) -> Costs,
     all: impl Fn(Costs, f32) -> Costs,
-) -> Fallible<Costs> {
-    let (name, cost) = value.split_once('=').ok_or("a cost is `CATEGORY=X`")?;
-    let cost: f32 = cost.parse()?;
+) -> Result<Costs, Failure> {
+    let (name, cost) = value
+        .split_once('=')
+        .ok_or_else(|| Failure::usage(format!("`{option} {value}`: a cost is `CATEGORY=X`")))?;
+    let cost = weight(option, cost)?;
     if name == "all" {
         return Ok(all(costs, cost));
     }
-    let category = Category::from_name(name).ok_or("unknown category")?;
+    let category = Category::from_name(name)
+        .ok_or_else(|| Failure::usage(format!("`{option} {value}`: unknown category `{name}`")))?;
     Ok(one(costs, category, cost))
 }
 
-fn parse(arguments: &[String]) -> Fallible<Arguments> {
-    let mut parsed = Arguments::default();
-    let mut weight = 1.0f32;
+/// Parses the command line. `None` asks for the usage.
+fn parse(arguments: &[String]) -> Result<Option<Options>, Failure> {
+    let mut train = Vec::new();
+    let mut test = Vec::new();
+    let mut config = TrainConfig::default();
+    let mut base = None;
+    let mut out = None;
+    let mut setting = None;
+    let mut weight_option = None;
+    let mut source_weight = 1.0f32;
     let mut rest = arguments.iter();
     while let Some(option) = rest.next() {
+        let option = option.as_str();
+        if option == "--help" {
+            return Ok(None);
+        }
         let value = rest
             .next()
-            .ok_or_else(|| format!("`{option}` needs a value"))?;
-        let config = &mut parsed.config;
-        match option.as_str() {
-            "--weight" => weight = value.parse()?,
-            "--corpus" => load(&mut parsed.train, &Format::Corpus, value, weight)?,
-            "--benign" => load(&mut parsed.train, &Format::Benign, value, weight)?,
-            "--labeled" => load(&mut parsed.train, &Format::Labeled, value, weight)?,
-            "--test-corpus" => load(&mut parsed.test, &Format::Corpus, value, 1.0)?,
-            "--test-benign" => load(&mut parsed.test, &Format::Benign, value, 1.0)?,
-            "--test-labeled" => load(&mut parsed.test, &Format::Labeled, value, 1.0)?,
+            .ok_or_else(|| Failure::usage(format!("`{option}` needs a value")))?;
+        let source = |list: &mut Vec<Source>, format, weight| {
+            list.push(Source {
+                format,
+                path: value.clone(),
+                weight,
+            });
+        };
+        match option {
+            "--weight" => {
+                source_weight = weight(option, value)?;
+                weight_option = Some(value.clone());
+            }
+            "--corpus" | "--benign" | "--labeled" => {
+                let format = match option {
+                    "--corpus" => Format::Corpus,
+                    "--benign" => Format::Benign,
+                    _ => Format::Labeled,
+                };
+                source(&mut train, format, source_weight);
+                weight_option = None;
+            }
+            "--test-corpus" => source(&mut test, Format::Corpus, 1.0),
+            "--test-benign" => source(&mut test, Format::Benign, 1.0),
+            "--test-labeled" => source(&mut test, Format::Labeled, 1.0),
+            "--out" if out.is_some() => return Err(Failure::usage("`--out` is given twice")),
+            "--out" => out = Some(value.clone()),
+            "--base" if base.is_some() => return Err(Failure::usage("`--base` is given twice")),
             "--base" => {
-                parsed.base = Some(match EmbeddedModel::from_name(value) {
-                    Some(embedded) => embedded.load(),
-                    None => Model::from_bytes(&fs::read(value)?)?,
-                });
-                *config = TrainConfig::fine_tuning();
+                if let Some(setting) = setting {
+                    return Err(Failure::usage(format!(
+                        "`--base` must come before `{setting}`, because it replaces the settings"
+                    )));
+                }
+                base = Some(value.clone());
+                config = TrainConfig::fine_tuning();
             }
-            "--hidden" if value == "none" => config.hidden.clear(),
-            "--hidden" => {
-                config.hidden = value.split(',').map(str::parse).collect::<Result<_, _>>()?;
+            _ => {
+                match option {
+                    "--hidden" if value == "none" => config.hidden.clear(),
+                    "--hidden" => {
+                        config.hidden = value
+                            .split(',')
+                            .map(|size| number(option, size))
+                            .collect::<Result<_, _>>()?;
+                    }
+                    "--epochs" => config.epochs = number(option, value)?,
+                    "--quantized-epochs" => config.quantized_epochs = number(option, value)?,
+                    "--batch-size" => config.batch_size = number(option, value)?,
+                    "--learning-rate" => config.learning_rate = number(option, value)?,
+                    "--weight-decay" => config.weight_decay = number(option, value)?,
+                    "--input-dropout" => config.input_dropout = number(option, value)?,
+                    "--seed" => config.seed = number(option, value)?,
+                    "--threads" => config.threads = number(option, value)?,
+                    "--benign-weight" => {
+                        config.costs = config.costs.benign(weight(option, value)?);
+                    }
+                    "--false-positive-cost" => {
+                        config.costs = cost(
+                            config.costs,
+                            option,
+                            value,
+                            Costs::false_positive,
+                            Costs::false_positives,
+                        )?;
+                    }
+                    "--false-negative-cost" => {
+                        config.costs = cost(
+                            config.costs,
+                            option,
+                            value,
+                            Costs::false_negative,
+                            Costs::false_negatives,
+                        )?;
+                    }
+                    _ => return Err(Failure::usage(format!("unknown option `{option}`"))),
+                }
+                setting = Some(option.to_owned());
             }
-            "--epochs" => config.epochs = value.parse()?,
-            "--quantized-epochs" => config.quantized_epochs = value.parse()?,
-            "--batch-size" => config.batch_size = value.parse()?,
-            "--learning-rate" => config.learning_rate = value.parse()?,
-            "--weight-decay" => config.weight_decay = value.parse()?,
-            "--input-dropout" => config.input_dropout = value.parse()?,
-            "--seed" => config.seed = value.parse()?,
-            "--threads" => config.threads = value.parse()?,
-            "--benign-weight" => config.costs = config.costs.benign(value.parse()?),
-            "--false-positive-cost" => {
-                config.costs = cost(
-                    config.costs,
-                    value,
-                    Costs::false_positive,
-                    Costs::false_positives,
-                )?;
-            }
-            "--false-negative-cost" => {
-                config.costs = cost(
-                    config.costs,
-                    value,
-                    Costs::false_negative,
-                    Costs::false_negatives,
-                )?;
-            }
-            "--out" => parsed.out = Some(value.clone()),
-            _ => return Err(format!("unknown option `{option}`").into()),
         }
     }
-    Ok(parsed)
+    if let Some(value) = weight_option {
+        return Err(Failure::usage(format!(
+            "`--weight {value}` is not followed by a training data file"
+        )));
+    }
+    let out = out.ok_or_else(|| Failure::usage("`--out MODEL` is required"))?;
+    Ok(Some(Options {
+        train,
+        test,
+        config,
+        base,
+        out,
+    }))
+}
+
+/// Reads the samples of `sources` into one dataset.
+fn load(sources: &[Source]) -> Result<Dataset, Failure> {
+    let mut data = Dataset::new();
+    for source in sources {
+        let path = &source.path;
+        let bytes = fs::read(path).map_err(|error| Failure::run(format!("{path}: {error}")))?;
+        let mut samples = Dataset::new();
+        match source.format {
+            Format::Corpus => samples.extend_from_corpus(&bytes),
+            Format::Benign => samples.extend_from_lines(&bytes, CategorySet::EMPTY),
+            Format::Labeled => samples.extend_from_labeled_lines(&bytes),
+        }
+        .and_then(|_| samples.scale_weights(source.weight))
+        .map_err(|error| Failure::run(format!("{path}: {error}")))?;
+        data.extend_from_dataset(&samples);
+    }
+    Ok(data)
+}
+
+/// Loads `--base`: an embedded model by name, or a model file.
+fn base_model(value: &str) -> Result<Model, Failure> {
+    if let Some(embedded) = EmbeddedModel::from_name(value) {
+        return Ok(embedded.load());
+    }
+    let bytes = fs::read(value).map_err(|error| {
+        Failure::run(format!(
+            "`--base {value}` is neither the name of an embedded model nor a readable file: {error}"
+        ))
+    })?;
+    Model::from_bytes(&bytes).map_err(|error| Failure::run(format!("{value}: {error}")))
 }
 
 fn percent(rate: Option<f64>) -> String {
@@ -195,25 +323,31 @@ fn report(name: &str, evaluation: &Evaluation) {
     }
 }
 
-fn run(arguments: &[String]) -> Fallible<()> {
-    let Arguments {
+fn run(options: Options) -> Result<(), Failure> {
+    let Options {
         train,
         test,
         config,
         base,
         out,
-    } = parse(arguments)?;
-    let out = out.ok_or("`--out MODEL` is required")?;
+    } = options;
+    let trainer = Trainer::new(config).map_err(Failure::usage)?;
+    let base = base.as_deref().map(base_model).transpose()?;
+    let test_given = !test.is_empty();
+    let (train, test) = (load(&train)?, load(&test)?);
+    if test_given && test.is_empty() {
+        return Err(Failure::run("the held-out data files hold no samples"));
+    }
     eprintln!(
         "training on {} samples ({} windows, {} benign)",
         train.samples(),
         train.windows(),
         train.benign()
     );
-    let (held_out, name) = if test.is_empty() {
-        (&train, "training data")
-    } else {
+    let (held_out, name) = if test_given {
         (&test, "held-out data")
+    } else {
+        (&train, "training data")
     };
     let progress = |epoch: &EpochReport| {
         eprintln!(
@@ -224,10 +358,11 @@ fn run(arguments: &[String]) -> Fallible<()> {
             epoch.loss
         );
     };
-    let trainer = Trainer::new(config)?;
     let trained = match base {
         Some(base) => {
-            let trained = trainer.fine_tune_with_progress(&base, &train, progress)?;
+            let trained = trainer
+                .fine_tune_with_progress(&base, &train, progress)
+                .map_err(Failure::run)?;
             let scorer = Scorer::with_model(base);
             report(
                 &format!("base model on {name}"),
@@ -235,13 +370,15 @@ fn run(arguments: &[String]) -> Fallible<()> {
             );
             trained
         }
-        None => trainer.train_with_progress(&train, progress)?,
+        None => trainer
+            .train_with_progress(&train, progress)
+            .map_err(Failure::run)?,
     };
     let (mean, largest) = trained.report().quantization_drift();
     eprintln!("quantization moves a score by {mean:.2} on average, {largest:.1} at most");
 
     let bytes = trained.model().to_bytes();
-    fs::write(&out, &bytes)?;
+    fs::write(&out, &bytes).map_err(|error| Failure::run(format!("{out}: {error}")))?;
     eprintln!("wrote {} bytes to {out}", bytes.len());
 
     let scorer = Scorer::with_model(trained.into_model());
@@ -250,15 +387,33 @@ fn run(arguments: &[String]) -> Fallible<()> {
 }
 
 fn main() -> ExitCode {
-    let arguments: Vec<String> = env::args().skip(1).collect();
-    match run(&arguments) {
+    let arguments: Result<Vec<String>, _> = env::args_os()
+        .skip(1)
+        .map(|argument| argument.into_string())
+        .collect();
+    let result = match arguments {
+        Ok(arguments) => parse(&arguments),
+        Err(_) => Err(Failure::usage("an argument is not valid UTF-8")),
+    };
+    let result = match result {
+        Ok(Some(options)) => run(options),
+        Ok(None) => {
+            println!("{USAGE}");
+            println!("Run `cargo doc --examples` or read examples/train.rs for every option.");
+            return ExitCode::SUCCESS;
+        }
+        Err(failure) => Err(failure),
+    };
+    match result {
         Ok(()) => ExitCode::SUCCESS,
-        Err(error) => {
-            eprintln!("train: {error}");
-            eprintln!(
-                "usage: train [--corpus FILE] [--benign FILE] [--labeled FILE] [OPTION]... --out MODEL"
-            );
+        Err(Failure::Usage(message)) => {
+            eprintln!("train: {message}");
+            eprintln!("{USAGE}");
             ExitCode::from(2)
+        }
+        Err(Failure::Run(message)) => {
+            eprintln!("train: {message}");
+            ExitCode::FAILURE
         }
     }
 }

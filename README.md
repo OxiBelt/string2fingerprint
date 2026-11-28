@@ -140,9 +140,9 @@ let scorer = Scorer::with_model(trained.into_model());
 let evaluation = held_out.evaluate(&scorer);
 ```
 
-The `train` example does the same from the command line, with every setting
-as an option and a report of false positives and false negatives on held-out
-samples:
+The `train` example trains from the command line, with every setting as an
+option and a report of false positives and false negatives on held-out
+samples, which it reads from files of their own:
 
 ```sh
 cargo run --release --features train --example train -- \
