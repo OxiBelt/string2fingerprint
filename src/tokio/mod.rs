@@ -3,8 +3,8 @@
 //!
 //! Scoring is CPU-bound: with an AVX-512 VNNI backend, about 10
 //! microseconds for an input of one window (512 bytes) and 1.6 ms for
-//! 64 KiB. [`AsyncScorer`] is the asynchronous counterpart of
-//! [`Scorer`](crate::Scorer). Their methods run an input of at most the
+//! 64 KiB. [`AsyncScorer`] and [`AsyncDetector`] are the asynchronous counterparts
+//! of [`Scorer`](crate::Scorer) and [`Detector`](crate::Detector). Their methods run an input of at most the
 //! inline limit in the polling task, taking one unit of its cooperative
 //! budget, and a longer one on Tokio's blocking pool, and return futures
 //! ([`Offload`], [`Parallel`]) that own their input. Outside a Tokio
@@ -14,13 +14,15 @@
 //! The documentation of this module is completed with the rest of the
 //! interface.
 
+mod detector;
 mod offload;
 mod scorer;
 
+pub use detector::AsyncDetector;
 pub use offload::{Offload, Parallel};
 pub use scorer::AsyncScorer;
 
-/// The default inline limit of [`AsyncScorer`]: the
+/// The default inline limit of [`AsyncScorer`] and [`AsyncDetector`]: the
 /// longest input, in bytes, that is scored in the polling task.
 ///
 /// An input of 512 bytes is one window, which takes about 10 microseconds
