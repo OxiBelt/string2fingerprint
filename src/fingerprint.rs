@@ -5,6 +5,27 @@
 //! The extraction is portable integer code: it reads each input byte once,
 //! allocates nothing, and gives the same result on every target.
 //!
+//! The parts of the extraction are public as well, for callers that inspect
+//! or explain a fingerprint: [`lexical_symbol`] and [`shape_class`] map a
+//! byte to its symbols, [`Section`] names the range of features that counts
+//! one kind of n-gram, [`ngrams`] yields every n-gram of an input with the
+//! feature it counts in, and [`window_range`] gives the input bytes of a
+//! window.
+//!
+//! ```
+//! use string2fingerprint::fingerprint::{self, Section};
+//!
+//! let input = b"../etc/passwd";
+//! let window = fingerprint::fingerprints(input).next().expect("input has a window");
+//! // Every n-gram that ends in the window raises the feature it counts in.
+//! for ngram in fingerprint::ngrams(input) {
+//!     assert!(window.as_array()[ngram.feature()] > 0);
+//!     assert!(ngram.section().range().contains(&ngram.feature()));
+//! }
+//! assert_eq!(fingerprint::window_range(input.len(), 0), Some(0..input.len()));
+//! assert!(window.section(Section::LexicalTrigram).iter().any(|&feature| feature > 0));
+//! ```
+//!
 //! The design document in `docs/design.md` specifies the layout that this
 //! module implements. A model is only meaningful for the exact layout it was
 //! trained on, so a change to the tables and constants here needs every model
@@ -12,6 +33,7 @@
 
 use core::fmt;
 use core::iter::FusedIterator;
+use core::ops::Range;
 use core::slice::Chunks;
 
 /// The number of features in a [`Fingerprint`].
@@ -22,6 +44,13 @@ pub const BLOCK_LEN: usize = 256;
 
 /// The shortest input that has a window. Shorter inputs contain no n-gram.
 pub const MIN_INPUT_LEN: usize = 2;
+
+/// The number of shape classes. [`shape_class`] returns a value below it.
+pub const SHAPE_CLASS_COUNT: usize = SHAPE_CLASSES as usize;
+
+/// The highest n-gram count that a feature distinguishes. Higher counts give
+/// the feature of this count. See [`feature_value`].
+pub const MAX_COUNT: usize = COUNT_CAP as usize;
 
 /// First bucket and bucket count of lexical bigrams with a non-alphanumeric
 /// symbol.
@@ -52,6 +81,138 @@ const _: () = {
     assert!(next == FINGERPRINT_LEN);
 };
 
+/// A range of features in a [`Fingerprint`] that counts one kind of n-gram.
+///
+/// The sections are adjacent, in the order of [`Section::ALL`], and cover
+/// the whole fingerprint. A lexical n-gram is one of [`lexical_symbol`]s and
+/// a shape n-gram one of [`shape_class`]es. The design document gives the
+/// reasons for the split.
+///
+/// ```
+/// use string2fingerprint::fingerprint::{FINGERPRINT_LEN, Section};
+///
+/// assert_eq!(Section::ALL[0].range().start, 0);
+/// assert_eq!(Section::ALL[4].range().end, FINGERPRINT_LEN);
+/// assert_eq!(Section::of(1280), Some(Section::ShapeBigram));
+/// ```
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[non_exhaustive]
+pub enum Section {
+    /// Features 0 to 383: hashed lexical bigrams in which at least one
+    /// symbol is not alphanumeric.
+    LexicalBigram,
+    /// Features 384 to 1023: hashed lexical trigrams in which at least one
+    /// symbol is not alphanumeric.
+    LexicalTrigram,
+    /// Features 1024 to 1279: hashed lexical trigrams of alphanumeric
+    /// symbols only.
+    WordTrigram,
+    /// Features 1280 to 2303: one feature for each shape bigram.
+    ShapeBigram,
+    /// Features 2304 to 3071: hashed shape trigrams.
+    ShapeTrigram,
+}
+
+impl Section {
+    /// Every section, in fingerprint order.
+    ///
+    /// The type is a slice, so that a section added with a new layout does
+    /// not change it.
+    pub const ALL: &'static [Self] = &[
+        Self::LexicalBigram,
+        Self::LexicalTrigram,
+        Self::WordTrigram,
+        Self::ShapeBigram,
+        Self::ShapeTrigram,
+    ];
+
+    /// Returns the first feature and the number of features.
+    const fn bounds(self) -> (usize, u32) {
+        match self {
+            Self::LexicalBigram => LEX2,
+            Self::LexicalTrigram => LEX3,
+            Self::WordTrigram => WORD3,
+            Self::ShapeBigram => SHAPE2,
+            Self::ShapeTrigram => SHAPE3,
+        }
+    }
+
+    /// Returns the indexes of the features of this section.
+    #[must_use]
+    pub const fn range(self) -> Range<usize> {
+        let (start, len) = self.bounds();
+        start..start + len as usize
+    }
+
+    /// Returns the section that holds feature `index`, or `None` when the
+    /// index is not below [`FINGERPRINT_LEN`].
+    #[must_use]
+    pub const fn of(index: usize) -> Option<Self> {
+        let mut position = 0;
+        while position < Self::ALL.len() {
+            let section = Self::ALL[position];
+            let (start, len) = section.bounds();
+            if index >= start && index < start + len as usize {
+                return Some(section);
+            }
+            position += 1;
+        }
+        None
+    }
+
+    /// Returns the number of symbols in an n-gram of this section, 2 or 3.
+    #[must_use]
+    pub const fn order(self) -> usize {
+        match self {
+            Self::LexicalBigram | Self::ShapeBigram => 2,
+            Self::LexicalTrigram | Self::WordTrigram | Self::ShapeTrigram => 3,
+        }
+    }
+
+    /// Returns whether the n-grams of this section are of shape classes
+    /// rather than lexical symbols.
+    #[must_use]
+    pub const fn is_shape(self) -> bool {
+        matches!(self, Self::ShapeBigram | Self::ShapeTrigram)
+    }
+
+    /// Returns whether several n-grams share a feature of this section.
+    ///
+    /// Every section except [`Section::ShapeBigram`] maps an n-gram to its
+    /// feature with a fixed hash.
+    #[must_use]
+    pub const fn is_hashed(self) -> bool {
+        !matches!(self, Self::ShapeBigram)
+    }
+
+    /// Returns a stable `snake_case` identifier.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::LexicalBigram => "lexical_bigram",
+            Self::LexicalTrigram => "lexical_trigram",
+            Self::WordTrigram => "word_trigram",
+            Self::ShapeBigram => "shape_bigram",
+            Self::ShapeTrigram => "shape_trigram",
+        }
+    }
+}
+
+impl fmt::Display for Section {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.name())
+    }
+}
+
+const _: () = {
+    let mut index = 0;
+    while index < RANGES.len() {
+        let (start, len) = Section::ALL[index].bounds();
+        assert!(start == RANGES[index].0 && len == RANGES[index].1);
+        index += 1;
+    }
+};
+
 /// Window counts are capped at the last index of [`COMPRESS`].
 const COUNT_CAP: u8 = 15;
 
@@ -77,6 +238,40 @@ const _: () = assert!(SHAPE_CLASSES == 1 << SHAPE_BITS);
 
 /// Shape symbols: the class of a byte, below [`SHAPE_CLASSES`].
 const SHAPE: [u8; 256] = build_shape();
+
+/// Returns the lexical symbol of `byte`.
+///
+/// An ASCII byte maps to itself with letter case folded, so `b'Q'` maps to
+/// `b'q'`. A byte at or above `0x80` maps to `0x80` plus the number of its
+/// role in UTF-8, from 0 to 12: three ranges of continuation bytes, then
+/// lead bytes grouped so that overlong, surrogate, and out-of-range
+/// sequences differ from valid ones.
+#[must_use]
+pub const fn lexical_symbol(byte: u8) -> u8 {
+    LEX[byte as usize]
+}
+
+/// Returns the shape class of `byte`, below [`SHAPE_CLASS_COUNT`].
+///
+/// Classes 0 to 4 are lowercase hex letters, other lowercase letters,
+/// uppercase hex letters, other uppercase letters, and digits. Classes 5 to
+/// 10 are space, tab, line feed, carriage return, NUL, and other control
+/// bytes. Classes 11 to 18 group ASCII punctuation by its part in escape
+/// syntax, and classes 19 to 31 are the UTF-8 roles of [`lexical_symbol`].
+#[must_use]
+pub const fn shape_class(byte: u8) -> u8 {
+    SHAPE[byte as usize]
+}
+
+/// Returns the feature of a window in which an n-gram occurs `count` times.
+///
+/// Counts above [`MAX_COUNT`] give the feature of [`MAX_COUNT`], which is
+/// 255. The feature grows with the logarithm of the count.
+#[must_use]
+pub const fn feature_value(count: usize) -> u8 {
+    let capped = if count > MAX_COUNT { MAX_COUNT } else { count };
+    COMPRESS[capped]
+}
 
 /// Folds a byte at or above `0x80` into its UTF-8 role, numbered from zero.
 ///
@@ -190,43 +385,52 @@ struct Rolling {
     seen: u8,
 }
 
+/// Consumes one byte and passes the feature of each n-gram that ends in it
+/// to `emit`, in the order of the sections.
+///
+/// Every feature passed to `emit` is below [`FINGERPRINT_LEN`]: `bucket`
+/// stays inside its range, and a shape bigram is below the size of
+/// `SHAPE2`.
+#[inline(always)]
+fn step(state: &mut Rolling, byte: u8, mut emit: impl FnMut(usize)) {
+    let lex = u32::from(LEX[usize::from(byte)]);
+    let shape = u32::from(SHAPE[usize::from(byte)]);
+    let alnum = u32::from(shape < u32::from(ALNUM_CLASSES));
+
+    let lex3 = ((state.lex << 8) | lex) & 0x00FF_FFFF;
+    let shape3 = ((state.shape << SHAPE_BITS) | shape) & SHAPE3_MASK;
+    let alnum3 = ((state.alnum << 1) | alnum) & 0b111;
+
+    if state.seen >= 1 && alnum3 & 0b011 != 0b011 {
+        emit(bucket(mix((lex3 & 0xFFFF) | 0x0100_0000), LEX2));
+    }
+    if state.seen >= 2 {
+        let range = if alnum3 == 0b111 { WORD3 } else { LEX3 };
+        emit(bucket(mix(lex3 | 0x0200_0000), range));
+    }
+    if state.seen >= 1 {
+        // Below `SHAPE2.1`, which is the number of shape bigrams.
+        emit(SHAPE2.0 + (shape3 & SHAPE2_MASK) as usize);
+    }
+    if state.seen >= 2 {
+        emit(bucket(mix(shape3 | 0x0300_0000), SHAPE3));
+    }
+
+    state.lex = lex3 & 0xFFFF;
+    state.shape = shape3 & SHAPE2_MASK;
+    state.alnum = alnum3 & 0b011;
+    state.seen = (state.seen + 1).min(2);
+}
+
 /// Adds the n-grams that end in each byte of `block` to `histogram`.
 fn count_block(state: &mut Rolling, block: &[u8], histogram: &mut [u8; FINGERPRINT_LEN]) {
-    let mut bump = |index: usize| {
-        // Every index passed here is below `FINGERPRINT_LEN`: `bucket` stays
-        // inside its range, and a shape bigram is below the size of `SHAPE2`.
-        if let Some(count) = histogram.get_mut(index) {
-            *count = count.saturating_add(1);
-        }
-    };
     for &byte in block {
-        let lex = u32::from(LEX[usize::from(byte)]);
-        let shape = u32::from(SHAPE[usize::from(byte)]);
-        let alnum = u32::from(shape < u32::from(ALNUM_CLASSES));
-
-        let lex3 = ((state.lex << 8) | lex) & 0x00FF_FFFF;
-        let shape3 = ((state.shape << SHAPE_BITS) | shape) & SHAPE3_MASK;
-        let alnum3 = ((state.alnum << 1) | alnum) & 0b111;
-
-        if state.seen >= 1 && alnum3 & 0b011 != 0b011 {
-            bump(bucket(mix((lex3 & 0xFFFF) | 0x0100_0000), LEX2));
-        }
-        if state.seen >= 2 {
-            let range = if alnum3 == 0b111 { WORD3 } else { LEX3 };
-            bump(bucket(mix(lex3 | 0x0200_0000), range));
-        }
-        if state.seen >= 1 {
-            // Below `SHAPE2.1`, which is the number of shape bigrams.
-            bump(SHAPE2.0 + (shape3 & SHAPE2_MASK) as usize);
-        }
-        if state.seen >= 2 {
-            bump(bucket(mix(shape3 | 0x0300_0000), SHAPE3));
-        }
-
-        state.lex = lex3 & 0xFFFF;
-        state.shape = shape3 & SHAPE2_MASK;
-        state.alnum = alnum3 & 0b011;
-        state.seen = (state.seen + 1).min(2);
+        step(state, byte, |index| {
+            // `step` passes only indexes below `FINGERPRINT_LEN`.
+            if let Some(count) = histogram.get_mut(index) {
+                *count = count.saturating_add(1);
+            }
+        });
     }
 }
 
@@ -248,6 +452,29 @@ impl Fingerprint {
     #[must_use]
     pub const fn as_array(&self) -> &[u8; FINGERPRINT_LEN] {
         &self.0
+    }
+
+    /// Creates a fingerprint from a slice of [`FINGERPRINT_LEN`] features,
+    /// or returns `None` when the slice has another length.
+    #[must_use]
+    pub fn from_slice(features: &[u8]) -> Option<Self> {
+        features.try_into().ok().map(Self)
+    }
+
+    /// Returns the features of `section`.
+    #[must_use]
+    pub fn section(&self, section: Section) -> &[u8] {
+        &self.0[section.range()]
+    }
+
+    /// Iterates over the index and value of every feature that is not zero,
+    /// in index order.
+    pub fn nonzero(&self) -> impl Iterator<Item = (usize, u8)> + '_ {
+        self.0
+            .iter()
+            .enumerate()
+            .filter(|&(_, &feature)| feature != 0)
+            .map(|(index, &feature)| (index, feature))
     }
 
     /// Sets the features from the histograms of one or two blocks.
@@ -274,6 +501,18 @@ impl Default for Fingerprint {
     }
 }
 
+impl AsRef<[u8]> for Fingerprint {
+    fn as_ref(&self) -> &[u8] {
+        &self.0
+    }
+}
+
+impl From<[u8; FINGERPRINT_LEN]> for Fingerprint {
+    fn from(features: [u8; FINGERPRINT_LEN]) -> Self {
+        Self(features)
+    }
+}
+
 /// Returns the number of windows of an input of `len` bytes.
 #[must_use]
 pub const fn window_count(len: usize) -> usize {
@@ -283,6 +522,32 @@ pub const fn window_count(len: usize) -> usize {
         let blocks = len.div_ceil(BLOCK_LEN);
         if blocks > 1 { blocks - 1 } else { 1 }
     }
+}
+
+/// Returns the input bytes that window `index` of an input of `len` bytes
+/// covers, or `None` when the input has no such window.
+///
+/// Window `index` starts at block `index` and covers up to two blocks.
+/// Consecutive windows share one block.
+///
+/// ```
+/// use string2fingerprint::fingerprint::window_range;
+///
+/// assert_eq!(window_range(100, 0), Some(0..100));
+/// assert_eq!(window_range(600, 1), Some(256..600));
+/// assert_eq!(window_range(600, 2), None);
+/// assert_eq!(window_range(1, 0), None);
+/// ```
+#[must_use]
+pub const fn window_range(len: usize, index: usize) -> Option<Range<usize>> {
+    if index >= window_count(len) {
+        return None;
+    }
+    // The window exists, so its first block starts inside the input and
+    // the product is below `len`.
+    let start = index * BLOCK_LEN;
+    let end = start.saturating_add(2 * BLOCK_LEN);
+    Some(start..if end < len { end } else { len })
 }
 
 /// Yields the [`Fingerprint`] of every window of `input`, in input order.
@@ -374,6 +639,125 @@ impl Iterator for Fingerprints<'_> {
 impl ExactSizeIterator for Fingerprints<'_> {}
 
 impl FusedIterator for Fingerprints<'_> {}
+
+/// One n-gram of an input and the feature that counts it.
+///
+/// [`ngrams`] yields them. The type holds positions and a feature index,
+/// never input bytes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct NGram {
+    end: usize,
+    feature: usize,
+    section: Section,
+}
+
+impl NGram {
+    /// Returns the input bytes of the n-gram.
+    #[must_use]
+    pub const fn range(&self) -> Range<usize> {
+        self.end + 1 - self.section.order()..self.end + 1
+    }
+
+    /// Returns the index of the block that holds the last byte of the
+    /// n-gram, which is the block that counts it.
+    #[must_use]
+    pub const fn block(&self) -> usize {
+        self.end / BLOCK_LEN
+    }
+
+    /// Returns the index of the feature that counts the n-gram.
+    #[must_use]
+    pub const fn feature(&self) -> usize {
+        self.feature
+    }
+
+    /// Returns the section of the feature.
+    #[must_use]
+    pub const fn section(&self) -> Section {
+        self.section
+    }
+}
+
+/// Yields every n-gram of `input` that a fingerprint counts, ordered by its
+/// last byte and then by [`Section`].
+///
+/// A window counts each n-gram whose [`block`](NGram::block) it covers, so
+/// the feature of a window is [`feature_value`] of the number of n-grams of
+/// its blocks with that feature. An input shorter than [`MIN_INPUT_LEN`]
+/// has no n-gram. The iterator allocates nothing.
+#[must_use]
+pub fn ngrams(input: &[u8]) -> NGrams<'_> {
+    NGrams {
+        input,
+        position: 0,
+        state: Rolling::default(),
+        pending: [0; 4],
+        pending_len: 0,
+        pending_next: 0,
+    }
+}
+
+/// The iterator returned by [`ngrams`].
+#[derive(Clone)]
+pub struct NGrams<'a> {
+    input: &'a [u8],
+    /// The index of the next byte to consume.
+    position: usize,
+    state: Rolling,
+    /// The features of the n-grams that end in the byte before `position`.
+    pending: [usize; 4],
+    pending_len: u8,
+    pending_next: u8,
+}
+
+/// Shows the position and nothing derived from the input.
+impl fmt::Debug for NGrams<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("NGrams")
+            .field("position", &self.position)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Iterator for NGrams<'_> {
+    type Item = NGram;
+
+    fn next(&mut self) -> Option<NGram> {
+        while self.pending_next == self.pending_len {
+            let &byte = self.input.get(self.position)?;
+            self.position += 1;
+            let (pending, len) = (&mut self.pending, &mut self.pending_len);
+            *len = 0;
+            step(&mut self.state, byte, |feature| {
+                // `step` passes at most one feature for each section that
+                // can end in a byte, which is four.
+                if let Some(slot) = pending.get_mut(usize::from(*len)) {
+                    *slot = feature;
+                    *len += 1;
+                }
+            });
+            self.pending_next = 0;
+        }
+        let feature = self.pending[usize::from(self.pending_next)];
+        self.pending_next += 1;
+        // `step` passes only features below `FINGERPRINT_LEN`, which all
+        // have a section.
+        let section = Section::of(feature)?;
+        Some(NGram {
+            end: self.position - 1,
+            feature,
+            section,
+        })
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let pending = usize::from(self.pending_len - self.pending_next);
+        let rest = (self.input.len() - self.position).checked_mul(4);
+        (pending, rest.and_then(|rest| rest.checked_add(pending)))
+    }
+}
+
+impl FusedIterator for NGrams<'_> {}
 
 #[cfg(test)]
 mod tests {
@@ -693,6 +1077,159 @@ mod tests {
             });
             assert!(covered, "offset {offset}");
         }
+    }
+
+    #[test]
+    fn sections_partition_the_fingerprint() {
+        let mut next = 0;
+        for (index, &section) in Section::ALL.iter().enumerate() {
+            let range = section.range();
+            assert_eq!(range.start, next);
+            assert_eq!((range.start, range.len() as u32), RANGES[index]);
+            next = range.end;
+            assert_eq!(section.to_string(), section.name());
+            assert_eq!(section.is_hashed(), section != Section::ShapeBigram);
+        }
+        assert_eq!(next, FINGERPRINT_LEN);
+        for index in 0..FINGERPRINT_LEN {
+            let section = Section::of(index).unwrap();
+            assert!(section.range().contains(&index));
+        }
+        assert_eq!(Section::of(FINGERPRINT_LEN), None);
+        assert_eq!(Section::of(usize::MAX), None);
+    }
+
+    #[test]
+    fn public_tables_are_the_internal_ones() {
+        for byte in 0..=255u8 {
+            assert_eq!(lexical_symbol(byte), LEX[usize::from(byte)]);
+            assert_eq!(shape_class(byte), SHAPE[usize::from(byte)]);
+            assert!(usize::from(shape_class(byte)) < SHAPE_CLASS_COUNT);
+        }
+        for count in 0..40 {
+            assert_eq!(
+                feature_value(count),
+                COMPRESS[count.min(usize::from(COUNT_CAP))]
+            );
+        }
+        assert_eq!(feature_value(usize::MAX), 255);
+        assert_eq!(feature_value(MAX_COUNT), 255);
+    }
+
+    #[test]
+    fn window_ranges_cover_the_input_in_order() {
+        for len in [
+            0, 1, 2, 3, 255, 256, 257, 511, 512, 513, 767, 768, 769, 1025, 4096,
+        ] {
+            let count = window_count(len);
+            for index in 0..count {
+                let range = window_range(len, index).unwrap();
+                assert_eq!(range.start, index * BLOCK_LEN, "length {len}");
+                assert!(range.end <= len && range.len() <= 2 * BLOCK_LEN);
+                if index + 1 == count {
+                    assert_eq!(range.end, len);
+                }
+            }
+            assert_eq!(window_range(len, count), None);
+        }
+        assert_eq!(window_range(usize::MAX, usize::MAX), None);
+        let last = window_count(usize::MAX) - 1;
+        assert_eq!(window_range(usize::MAX, last).unwrap().end, usize::MAX);
+    }
+
+    /// Rebuilds the fingerprint of every window from the n-grams.
+    fn from_ngrams(input: &[u8]) -> Vec<Fingerprint> {
+        let windows = window_count(input.len());
+        let blocks = input.len().div_ceil(BLOCK_LEN);
+        let mut histograms = vec![[0usize; FINGERPRINT_LEN]; blocks];
+        for ngram in ngrams(input) {
+            let range = ngram.range();
+            assert_eq!(range.len(), ngram.section().order());
+            assert!(range.end <= input.len());
+            assert_eq!(ngram.block(), (range.end - 1) / BLOCK_LEN);
+            assert_eq!(Section::of(ngram.feature()), Some(ngram.section()));
+            histograms[ngram.block()][ngram.feature()] += 1;
+        }
+        (0..windows)
+            .map(|index| {
+                let mut features = [0u8; FINGERPRINT_LEN];
+                let last = (index + 1).min(blocks - 1);
+                for (feature, value) in features.iter_mut().enumerate() {
+                    let count = (index..=last).map(|block| histograms[block][feature]).sum();
+                    *value = feature_value(count);
+                }
+                Fingerprint::from_array(features)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn ngrams_rebuild_every_window() {
+        let mut rng = Rng::new(17);
+        for len in [0, 1, 2, 3, 7, 255, 256, 257, 512, 513, 800, 1300] {
+            for style in 0..2 {
+                let mut input = vec![0u8; len];
+                rng.fill(&mut input);
+                if style == 1 {
+                    input
+                        .iter_mut()
+                        .for_each(|byte| *byte = b"ab1./%'<"[usize::from(*byte % 8)]);
+                }
+                let expected: Vec<Fingerprint> = fingerprints(&input).collect();
+                assert_eq!(from_ngrams(&input), expected, "length {len}, style {style}");
+            }
+        }
+    }
+
+    #[test]
+    fn ngrams_follow_the_documented_order() {
+        let found: Vec<(core::ops::Range<usize>, Section)> = ngrams(b"a=1")
+            .map(|ngram| (ngram.range(), ngram.section()))
+            .collect();
+        assert_eq!(
+            found,
+            [
+                (0..2, Section::LexicalBigram),
+                (0..2, Section::ShapeBigram),
+                (1..3, Section::LexicalBigram),
+                (0..3, Section::LexicalTrigram),
+                (1..3, Section::ShapeBigram),
+                (0..3, Section::ShapeTrigram),
+            ]
+        );
+        assert_eq!(ngrams(b"").count(), 0);
+        assert_eq!(ngrams(b"x").count(), 0);
+        let mut iter = ngrams(b"abc");
+        assert_eq!(iter.size_hint(), (0, Some(12)));
+        assert_eq!(format!("{iter:?}"), "NGrams { position: 0, .. }");
+        assert_eq!(iter.by_ref().count(), 4);
+        assert!(iter.next().is_none());
+    }
+
+    #[test]
+    fn fingerprint_views_agree() {
+        let fingerprint = single(b"<img src=x onerror=alert(1)>");
+        assert_eq!(
+            Fingerprint::from_slice(fingerprint.as_ref()),
+            Some(fingerprint.clone())
+        );
+        assert_eq!(Fingerprint::from_slice(&[0; FINGERPRINT_LEN - 1]), None);
+        assert_eq!(Fingerprint::from(*fingerprint.as_array()), fingerprint);
+        let total: usize = Section::ALL
+            .iter()
+            .map(|&section| fingerprint.section(section).len())
+            .sum();
+        assert_eq!(total, FINGERPRINT_LEN);
+        let nonzero: Vec<(usize, u8)> = fingerprint.nonzero().collect();
+        assert!(!nonzero.is_empty());
+        assert!(
+            nonzero
+                .iter()
+                .all(|&(index, value)| { value != 0 && fingerprint.as_array()[index] == value })
+        );
+        let zeros = fingerprint.as_array().iter().filter(|&&value| value == 0);
+        assert_eq!(nonzero.len() + zeros.count(), FINGERPRINT_LEN);
+        assert_eq!(Fingerprint::ZERO.nonzero().count(), 0);
     }
 
     #[test]

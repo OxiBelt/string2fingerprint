@@ -170,6 +170,14 @@ window. It is built without interpreting the input as any particular language.
 Fingerprint extraction is portable integer code and gives the same result on
 every target.
 
+The parts of the extraction are public: the symbol of a byte in each table,
+the section of features that counts each kind of n-gram, the n-grams of an
+input in order with the feature that counts each one, and the input bytes of
+each window. The feature of a window is then the compressed number of
+n-grams of its blocks with that feature, so a caller can trace a feature back
+to the bytes that raised it. These parts are the layout, and a change to any
+of them needs every model to be retrained.
+
 ### Network
 
 The fingerprint feeds a small fully connected network with quantized
