@@ -9,6 +9,7 @@ use it.
 | `corpus.py` | Generates labeled synthetic samples. Standard library only. |
 | `attacks.py` | Grammars of the six injection categories. |
 | `obfuscation.py` | Obfuscating encodings and chains of them. |
+| `formats.py` | More benign formats, and generated hard negatives. |
 | `benign.py` | Benign text, the pools shared with attack carriers, and corruption of benign samples. |
 | `dataset.py` | Joins some samples into longer ones and writes a corpus file. |
 | `train.py` | Trains, quantizes, evaluates, and exports a model. Needs NumPy. |
@@ -65,10 +66,18 @@ traffic is used.
 
 - About half of the samples are benign: generated prose in many scripts, code
   and configuration lines, header values, paths, query strings, form bodies,
-  cookies, JSON, logs, and values with ordinary percent-escapes.
+  cookies, JSON, logs, and values with ordinary percent-escapes. `formats.py`
+  adds the ordinary forms of the syntax that attacks abuse: rich-text HTML
+  with links and images, parameterized SQL, command lines in documentation,
+  translation placeholders, YAML, TOML, INI, XML, GraphQL, relative imports
+  and asset paths that climb one or two levels, base64, JWTs, hashes, and
+  Windows paths.
 - Attack samples are generated from grammars for each category, optionally
   encoded, and placed in the same carriers as benign values: bare, query
-  string, form body, cookie, path, prose, JSON, and header values.
+  string, form body, cookie, path, prose, JSON, XML element or attribute,
+  GraphQL argument, YAML value, HTML attribute, CSV cell, and the values of
+  the `User-Agent`, `Referer`, `X-Forwarded-For`, `Cookie`,
+  `Authorization`, `Content-Disposition`, and other headers.
 - Each injection grammar in `attacks.py` draws an injection context, a
   technique, and the technique's operands independently. For example, SQL
   injection combines 15 breakouts, 12 techniques across five database
@@ -115,8 +124,11 @@ traffic is used.
   appended before or after, a payload that is an attack in two categories at
   once (for example a command that reads a traversed file, or response
   splitting with a script body), an obfuscation, or a damaged byte.
-- Hard negatives are benign samples that share vocabulary with attacks, such
-  as prose that mentions SQL keywords.
+- Hard negatives are benign samples that share vocabulary or punctuation
+  with attacks. Most are generated: prose with SQL, shell, markup, path, or
+  template words inserted, names with apostrophes, comparisons, quoted
+  speech, lists with `;`, `|`, or `&`, code with `&&` and `||`, and header
+  names in prose. The rest are fixed sentences of the same kinds.
 - Every benign sample passes a final check in `benign.py` that rejects the
   forms that the attack grammars produce, so that no benign sample carries a
   payload by accident. `test_attacks.py` checks that the check rejects

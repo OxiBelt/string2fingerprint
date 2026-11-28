@@ -337,10 +337,10 @@ class TestRecordsStream(unittest.TestCase):
                 by_pid[r.pair][r.kind] = r
         pairs = [d for d in by_pid.values() if len(d) == 2]
         self.assertGreater(len(pairs), 200)
-        # escape runs may have their backslashes doubled by the JSON carrier
+        # escape runs may have their backslashes doubled by a JSON or GraphQL carrier, or both
         layered = re.compile(rb"%25[0-9A-Fa-f]{2}|%u[0-9A-Fa-f]{4}|(&#[xX]?[0-9A-Fa-f]+;?){3}"
-                             rb"|(\\{1,2}(x[0-9a-fA-F]{2}|u[0-9a-f]{4}|[0-7]{2,3}|u\{[0-9a-f]+\})){3}"
-                             rb"|(\\{1,2}[0-9a-f]{2,6} ?){3}")
+                             rb"|(\\{1,4}(x[0-9a-fA-F]{2}|u[0-9a-f]{4}|[0-7]{2,3}|u\{[0-9a-f]+\})){3}"
+                             rb"|(\\{1,4}[0-9a-f]{2,6} ?){3}")
         for d in pairs:
             o, p = d["obf_pair"], d["plain_pair"]
             self.assertEqual(o.mask, corpus.M_OBFUSCATION)
@@ -352,8 +352,9 @@ class TestRecordsStream(unittest.TestCase):
     def test_carriers_shared_by_benign_and_attack(self):
         ben = {r.carrier for r in self.recs if r.kind == "benign"}
         atk = {r.carrier for r in self.recs if r.kind == "attack"}
-        for c in ("bare", "query", "form", "cookie", "path", "prose", "json",
-                  "header:ua", "header:referer", "header:xff", "header:cookie"):
+        for c in ("bare", "query", "form", "cookie", "path", "prose", "json", "csv", "xml", "graphql",
+                  "yaml", "html_attr", "header:ua", "header:referer", "header:xff", "header:cookie",
+                  "header:auth", "header:disposition", "header:other"):
             with self.subTest(carrier=c):
                 self.assertIn(c, ben)
                 self.assertIn(c, atk)
