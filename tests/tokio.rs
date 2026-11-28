@@ -7,6 +7,7 @@ use std::pin::{Pin, pin};
 use std::task::{Context, Poll};
 
 use string2fingerprint::fingerprint::{Fingerprint, fingerprints};
+use string2fingerprint::model::{DEFAULT_MODEL, EmbeddedModel, ModelError};
 use string2fingerprint::prelude::*;
 use string2fingerprint::tokio::fingerprint::FingerprintReader;
 use string2fingerprint::tokio::{
@@ -327,6 +328,60 @@ fn fingerprint_readers_give_the_windows_of_the_whole_input() {
 }
 
 #[test]
+fn models_load_from_bytes_and_files() {
+    runtime().block_on(async {
+        for model in EmbeddedModel::ALL {
+            let parsed = string2fingerprint::tokio::model::from_bytes(model.bytes())
+                .await
+                .expect("embedded models are valid");
+            assert_eq!(parsed, model.load());
+        }
+        assert_eq!(
+            string2fingerprint::tokio::model::from_bytes(Vec::new()).await,
+            Err(ModelError::Truncated)
+        );
+
+        let dir = std::env::temp_dir().join(format!("s2fp-tokio-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("a temporary directory");
+        let result = async {
+            let good = dir.join("default.s2fp");
+            tokio::fs::write(&good, DEFAULT_MODEL).await?;
+            let model = string2fingerprint::tokio::model::read(&good).await?;
+            assert_eq!(model, string2fingerprint::model::Model::embedded());
+
+            let bad = dir.join("bad.s2fp");
+            tokio::fs::write(&bad, b"not a model").await?;
+            let error = string2fingerprint::tokio::model::read(&bad)
+                .await
+                .expect_err("not a model");
+            assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+            assert!(
+                error
+                    .get_ref()
+                    .and_then(|e| e.downcast_ref::<ModelError>())
+                    .is_some()
+            );
+
+            let long = dir.join("long.s2fp");
+            tokio::fs::write(&long, vec![0u8; 8 << 20]).await?;
+            let error = string2fingerprint::tokio::model::read(&long)
+                .await
+                .expect_err("too long");
+            assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+
+            let missing = string2fingerprint::tokio::model::read(dir.join("missing"))
+                .await
+                .expect_err("missing");
+            assert_eq!(missing.kind(), io::ErrorKind::NotFound);
+            io::Result::Ok(())
+        }
+        .await;
+        std::fs::remove_dir_all(&dir).expect("the directory is removed");
+        result.expect("the files are written");
+    });
+}
+
+#[test]
 fn work_runs_on_a_current_thread_runtime() {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .build()
@@ -376,6 +431,37 @@ fn stream_progress_follows_small_writes() {
         // Each write of 128 bytes is at most the inline limit, so it is
         // scored at once: the stream flags at the same part.
         assert_eq!(first, Some(first_sync));
+    });
+}
+
+#[test]
+fn futures_and_streams_can_be_spawned_and_shared() {
+    fn assert_send_sync<T: Send + Sync + 'static>(_: &T) {}
+    let scorer = AsyncScorer::new();
+    let detector = AsyncDetector::new();
+    assert_send_sync(&scorer.stream());
+    assert_send_sync(&detector.stream());
+    assert_send_sync(&scorer.score(Vec::new()));
+    assert_send_sync(&detector.detect_parallel(vec![Vec::<u8>::new()], 2));
+    assert_send_static(&scorer.score_reader(&b"input"[..]));
+    assert_send_static(&detector.detect_reader(&b"input"[..]));
+    runtime().block_on(async {
+        // The futures own their input even when an argument borrows.
+        let headers = [String::from("Host: example.com"), String::from("X-Id: 1")];
+        let fields = scorer.score_fields(headers.iter().map(|header| header.as_bytes().to_vec()));
+        let path = std::path::PathBuf::from("missing.s2fp");
+        let model = string2fingerprint::tokio::model::read(&path);
+        drop(headers);
+        drop(path);
+        let fields = tokio::spawn(fields).await.expect("the task completes");
+        assert_eq!(
+            fields,
+            scorer
+                .scorer()
+                .score_fields([&b"Host: example.com"[..], b"X-Id: 1"])
+        );
+        let model = tokio::spawn(model).await.expect("the task completes");
+        assert_eq!(model.expect_err("missing").kind(), io::ErrorKind::NotFound);
     });
 }
 

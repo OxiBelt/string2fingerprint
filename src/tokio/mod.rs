@@ -7,7 +7,8 @@
 //! of [`Scorer`](crate::Scorer) and [`Detector`](crate::Detector), and
 //! [`AsyncScoreStream`] and [`AsyncDetectionStream`] those of their streams,
 //! which also implement Tokio's `AsyncWrite`;
-//! [`fingerprint::FingerprintReader`] returns the windows of an `AsyncRead`. Their methods run an input of at most the
+//! [`fingerprint::FingerprintReader`] returns the windows of an `AsyncRead`,
+//! and [`model`] loads models on the blocking pool. Their methods run an input of at most the
 //! inline limit in the polling task, taking one unit of its cooperative
 //! budget, and a longer one on Tokio's blocking pool, and return futures
 //! ([`Offload`], [`Parallel`]) that own their input. Outside a Tokio
@@ -19,6 +20,7 @@
 
 mod detector;
 pub mod fingerprint;
+pub mod model;
 mod offload;
 mod pipeline;
 mod scorer;
