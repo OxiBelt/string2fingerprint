@@ -7,8 +7,10 @@
 //! again whenever a data file changes, and never at run time.
 //!
 //! Depend on the library twice: as a dependency for scoring, and as a build
-//! dependency with the `build` feature for training. Cargo builds the two
-//! separately, so the compiled crate contains no training code.
+//! dependency with the `build` feature for training. With feature resolver
+//! 2 or later, the default from edition 2021 on, Cargo builds the two
+//! separately, so the compiled crate contains no training code. A virtual
+//! workspace needs `resolver = "2"` or later for that.
 //!
 //! ```toml
 //! [dependencies]
@@ -25,6 +27,12 @@
 //! [profile.release.package.string2fingerprint]
 //! opt-level = 3
 //! ```
+//!
+//! Cargo reads profiles only from the root manifest of the workspace that is
+//! built. When the crate that trains is a member of a workspace or a
+//! dependency of another crate, the profile belongs in that root manifest.
+//! `[profile.dev.build-override] opt-level = 3` there optimizes every build
+//! dependency instead.
 //!
 //! `build.rs`:
 //!
@@ -74,10 +82,14 @@
 //!
 //! - `STRING2FINGERPRINT_MODEL_<NAME>` holds the path of a model file to
 //!   use in place of training. `<NAME>` is the name of the model in upper
-//!   case with `_` in place of `-`. The file is validated and copied. The
-//!   training sources are then not read, unless samples are
-//!   [held out](ModelBuild::hold_out) from them. Use this to build with a
-//!   model that was trained elsewhere, or without the data.
+//!   case. A relative path is relative to the directory of the package. The
+//!   file is validated and written to `OUT_DIR` like a trained model, and
+//!   the build prints a warning that names it. The training sources are
+//!   then not read, unless samples are [held out](ModelBuild::hold_out)
+//!   from them. Use this to build with a model that was trained elsewhere,
+//!   or without the data. An evaluation on held-out samples only means
+//!   something when that model was not trained on them, such as a model
+//!   that an earlier build of the same sources with the same seed trained.
 //! - `STRING2FINGERPRINT_TRAIN_THREADS` holds the number of threads to
 //!   train with. Without it, the build uses
 //!   [`TrainConfig::threads`](crate::train::TrainConfig::threads) when
@@ -91,8 +103,11 @@
 //!   for each 10,000 samples with the default settings on four cores of
 //!   an optimized build, and about 20 times that without the optimization
 //!   above.
-//! - Data files are trusted input. A build that trains on files from an
-//!   untrusted source lets that source choose what the model flags.
+//! - Data files and the variables are trusted input. A build that trains on
+//!   files from an untrusted source, or whose environment an untrusted
+//!   source sets, lets that source choose what the model flags.
+//! - A path must be UTF-8 without a line break, so that Cargo can read the
+//!   directives that name it.
 
 use std::env;
 use std::ffi::OsString;
@@ -234,7 +249,7 @@ impl Source {
 #[non_exhaustive]
 pub enum BuildError {
     /// The name of the model is empty, longer than 64 bytes, or contains a
-    /// byte other than an ASCII letter, a digit, `_`, or `-`.
+    /// byte other than a lowercase ASCII letter, a digit, or `_`.
     InvalidName,
     /// No output directory was set and `OUT_DIR` is not set, so the caller
     /// is not a build script.
@@ -273,7 +288,7 @@ impl fmt::Display for BuildError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::InvalidName => f.write_str(
-                "model name must be 1 to 64 ASCII letters, digits, underscores, or hyphens",
+                "model name must be 1 to 64 lowercase ASCII letters, digits, or underscores",
             ),
             Self::MissingOutDir => {
                 f.write_str("no output directory: `OUT_DIR` is not set outside a build script")
@@ -362,7 +377,8 @@ impl ModelBuild {
     ///
     /// The name is the one that [`include_model!`](crate::include_model)
     /// takes, and the model is written to `<name>.s2fp`. It consists of 1
-    /// to 64 ASCII letters, digits, `_`, and `-`.
+    /// to 64 lowercase ASCII letters, digits, and `_`, so that each name
+    /// has a variable of its own.
     pub fn new(name: impl Into<String>) -> Self {
         Self {
             name: name.into(),
@@ -413,6 +429,8 @@ impl ModelBuild {
     ///
     /// Read the documentation of [`Trainer::fine_tune`] first: tuning on
     /// benign text alone makes the model miss attacks that look like it.
+    /// A build script that reads `base` from a file prints
+    /// `cargo::rerun-if-changed` for that file itself.
     pub fn fine_tune(mut self, base: Model) -> Self {
         self.base = Some(base);
         self
@@ -424,9 +442,15 @@ impl ModelBuild {
     /// [`include_thresholds!`](crate::include_thresholds).
     ///
     /// A category for which `objective` is undefined, such as one without a
-    /// validation sample, keeps its threshold from `fallback`. The build
-    /// needs samples from [`ModelBuild::hold_out`] or
+    /// validation sample, keeps its threshold from `fallback`. A rate or a
+    /// recall outside 0.0 to 1.0, or a cost that is negative or not finite,
+    /// is refused. The build needs samples from [`ModelBuild::hold_out`] or
     /// [`ModelBuild::validate_on`].
+    ///
+    /// Without this call, the build removes a thresholds file that an
+    /// earlier build wrote, so that
+    /// [`include_thresholds!`](crate::include_thresholds) cannot embed
+    /// thresholds of another model.
     pub fn calibrate(mut self, objective: Objective, fallback: Thresholds) -> Self {
         self.calibration = Some((objective, fallback));
         self
@@ -475,7 +499,7 @@ impl ModelBuild {
             && self
                 .name
                 .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-');
+                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_');
         if !name_is_valid {
             return Err(BuildError::InvalidName);
         }
@@ -484,18 +508,36 @@ impl ModelBuild {
                 "the held-out fraction is not from 0.0 to less than 1.0",
             ));
         }
+        if let Some((objective, _)) = self.calibration {
+            if !objective_is_valid(objective) {
+                return Err(BuildError::InvalidSetting(
+                    "the objective has a rate outside 0.0 to 1.0 or an invalid cost",
+                ));
+            }
+            if self.validation.is_empty() && self.held_out == 0.0 {
+                return Err(BuildError::NoValidationSamples);
+            }
+        }
 
         let model_variable = model_variable(&self.name);
-        lines.push(format!("cargo::rerun-if-env-changed={model_variable}"));
-        lines.push(format!("cargo::rerun-if-env-changed={THREADS_VARIABLE}"));
-        for source in self.training.iter().chain(&self.validation) {
-            lines.push(format!("cargo::rerun-if-changed={}", source.path.display()));
-        }
         let prebuilt = variable(&model_variable)
             .filter(|path| !path.is_empty())
             .map(PathBuf::from);
-        if let Some(path) = &prebuilt {
-            lines.push(format!("cargo::rerun-if-changed={}", path.display()));
+        // Every path is checked before any directive is printed.
+        let mut watched = Vec::new();
+        for path in self
+            .training
+            .iter()
+            .chain(&self.validation)
+            .map(Source::path)
+            .chain(prebuilt.as_deref())
+        {
+            watched.push(directive_path(path)?);
+        }
+        lines.push(format!("cargo::rerun-if-env-changed={model_variable}"));
+        lines.push(format!("cargo::rerun-if-env-changed={THREADS_VARIABLE}"));
+        for path in watched {
+            lines.push(format!("cargo::rerun-if-changed={path}"));
         }
 
         let out_dir = self
@@ -544,7 +586,8 @@ impl ModelBuild {
                     }
                 })?;
                 lines.push(format!(
-                    "string2fingerprint: model `{}` is the file {}",
+                    "cargo::warning=the model `{}` is the file {} that `{model_variable}` names, \
+                     not a model trained by this build",
                     self.name,
                     path.display()
                 ));
@@ -568,7 +611,8 @@ impl ModelBuild {
                         "cargo::warning=training the model `{}` took {seconds} s. Cargo compiles \
                          build dependencies without optimization by default: set `opt-level = 3` \
                          under `[profile.dev.package.string2fingerprint]` and \
-                         `[profile.release.package.string2fingerprint]`",
+                         `[profile.release.package.string2fingerprint]` in the root manifest of \
+                         the workspace",
                         self.name
                     ));
                 }
@@ -597,14 +641,28 @@ impl ModelBuild {
         let path = write(MODEL_EXTENSION, &model.to_bytes())?;
         let thresholds_path = match &thresholds {
             Some(thresholds) => Some(write(THRESHOLDS_EXTENSION, &thresholds.to_bytes())?),
-            None => None,
+            None => {
+                // Cargo keeps `OUT_DIR` between builds, so the thresholds of
+                // an earlier build would otherwise stay.
+                let stale = out_dir.join(format!("{}.{THRESHOLDS_EXTENSION}", self.name));
+                match fs::remove_file(&stale) {
+                    Ok(()) => {}
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                    Err(error) => return Err(BuildError::Io { path: stale, error }),
+                }
+                None
+            }
         };
 
         Ok(BuiltModel {
             model,
             path,
             report,
-            training_samples: training.samples(),
+            training_samples: if prebuilt.is_some() {
+                0
+            } else {
+                training.samples()
+            },
             evaluation,
             thresholds,
             thresholds_path,
@@ -620,8 +678,33 @@ const THRESHOLDS_EXTENSION: &str = "thresholds";
 
 /// Returns the name of the variable that replaces the model `name`.
 fn model_variable(name: &str) -> String {
-    let suffix = name.to_ascii_uppercase().replace('-', "_");
-    format!("{MODEL_VARIABLE}{suffix}")
+    format!("{MODEL_VARIABLE}{}", name.to_ascii_uppercase())
+}
+
+/// Returns `path` as the text of a directive for Cargo, which must be UTF-8
+/// and on one line.
+fn directive_path(path: &Path) -> Result<&str, BuildError> {
+    path.to_str()
+        .filter(|text| !text.contains(['\n', '\r']))
+        .ok_or(BuildError::InvalidSetting(
+            "a path is not UTF-8 or contains a line break",
+        ))
+}
+
+/// Returns whether [`Evaluation::thresholds`] can meet `objective` for a
+/// category with samples.
+fn objective_is_valid(objective: Objective) -> bool {
+    match objective {
+        Objective::MaxFalsePositiveRate(rate) | Objective::MinRecall(rate) => {
+            (0.0..=1.0).contains(&rate)
+        }
+        Objective::MinCost {
+            false_positive,
+            false_negative,
+        } => [false_positive, false_negative]
+            .iter()
+            .all(|cost| cost.is_finite() && *cost >= 0.0),
+    }
 }
 
 /// Returns the number of threads to train with: the variable for it, then
@@ -678,7 +761,8 @@ impl BuiltModel {
     }
 
     /// Returns the number of samples that the model was trained on, without
-    /// the held-out ones. It is 0 when the training sources were not read.
+    /// the held-out ones. It is 0 when the model came from the file that
+    /// `STRING2FINGERPRINT_MODEL_<NAME>` names.
     #[must_use]
     pub fn training_samples(&self) -> usize {
         self.training_samples
@@ -945,7 +1029,7 @@ mod tests {
         let variables = [("STRING2FINGERPRINT_MODEL_MY_WAF2", compact)];
 
         // The training sources are not read, so they need not exist.
-        let missing = ModelBuild::new("my-waf2")
+        let missing = ModelBuild::new("my_waf2")
             .train_on(Source::corpus(scratch.0.join("missing.bin")))
             .out_dir(scratch.out());
         let (result, lines) = execute(missing.clone(), &variables);
@@ -954,13 +1038,18 @@ mod tests {
         assert!(built.report().is_none());
         assert_eq!(built.training_samples(), 0);
         assert_eq!(
-            fs::read(scratch.out().join("my-waf2.s2fp")).unwrap(),
+            fs::read(scratch.out().join("my_waf2.s2fp")).unwrap(),
             EmbeddedModel::Compact.bytes()
         );
         assert!(lines.contains(&format!("cargo::rerun-if-changed={compact}")));
         assert!(
             lines.contains(&"cargo::rerun-if-env-changed=STRING2FINGERPRINT_MODEL_MY_WAF2".into())
         );
+        // The replacement is never silent.
+        assert!(lines.contains(&format!(
+            "cargo::warning=the model `my_waf2` is the file {compact} that \
+             `STRING2FINGERPRINT_MODEL_MY_WAF2` names, not a model trained by this build"
+        )));
 
         // An empty variable is like none, and held-out samples need the
         // sources even with a model file.
@@ -990,6 +1079,26 @@ mod tests {
         let variables = [("STRING2FINGERPRINT_MODEL_MY_WAF2", broken.to_str().unwrap())];
         let (result, _) = execute(missing, &variables);
         assert!(matches!(result, Err(BuildError::Model { path, .. }) if path == broken));
+    }
+
+    #[test]
+    fn a_build_without_thresholds_removes_those_of_an_earlier_build() {
+        let scratch = Scratch::new("stale");
+        let fallback = Thresholds::uniform(Threshold::at(200));
+        let calibrated = build(&scratch, "waf", 20)
+            .hold_out(0.25)
+            .calibrate(Objective::MinRecall(1.0), fallback);
+        run(calibrated);
+        assert_eq!(scratch.written(), ["waf.s2fp", "waf.thresholds"]);
+        // Thresholds of other models stay.
+        fs::write(scratch.out().join("other.thresholds"), [0; 16]).unwrap();
+
+        let built = run(build(&scratch, "waf", 20));
+        assert!(built.thresholds().is_none() && built.thresholds_path().is_none());
+        assert_eq!(scratch.written(), ["other.thresholds", "waf.s2fp"]);
+        // Nothing to remove is not an error either.
+        run(build(&scratch, "waf", 20));
+        assert_eq!(scratch.written(), ["other.thresholds", "waf.s2fp"]);
     }
 
     #[test]
@@ -1048,7 +1157,17 @@ mod tests {
     fn invalid_builds_are_refused_and_write_nothing() {
         let scratch = Scratch::new("invalid");
         let long = "n".repeat(MAX_NAME_LEN + 1);
-        for name in ["", "a/b", "a.b", "..", "a b", "mod\u{e8}le", long.as_str()] {
+        for name in [
+            "",
+            "a/b",
+            "a.b",
+            "..",
+            "a b",
+            "mod\u{e8}le",
+            "Waf",
+            "my-waf",
+            long.as_str(),
+        ] {
             let (result, lines) = execute(build(&scratch, name, 4), &[]);
             assert!(matches!(result, Err(BuildError::InvalidName)), "{name:?}");
             assert!(lines.is_empty());
@@ -1068,6 +1187,53 @@ mod tests {
         }
         let error = refused(build(&scratch, "m", 4), &[(THREADS_VARIABLE, "none")]);
         assert!(matches!(error, BuildError::InvalidSetting(_)));
+
+        // An objective that no threshold can meet would keep every
+        // fallback, so it is refused like another setting.
+        let fallback = Thresholds::uniform(Threshold::at(128));
+        for objective in [
+            Objective::MinRecall(90.0),
+            Objective::MaxFalsePositiveRate(-0.1),
+            Objective::MaxFalsePositiveRate(f64::NAN),
+            Objective::MinCost {
+                false_positive: 1.0,
+                false_negative: f64::INFINITY,
+            },
+        ] {
+            let build = build(&scratch, "m", 4).hold_out(0.5);
+            let error = refused(build.calibrate(objective, fallback), &[]);
+            assert!(
+                matches!(error, BuildError::InvalidSetting(_)),
+                "{objective:?}"
+            );
+        }
+
+        // A path that Cargo could not read in a directive, whether it names
+        // a source or comes from the variable, is refused before any
+        // directive is printed.
+        use std::os::unix::ffi::OsStrExt;
+        let not_utf8 = PathBuf::from(std::ffi::OsStr::from_bytes(b"data/benign\xff.txt"));
+        for path in [
+            PathBuf::from("data/a\ncargo::warning=injected.txt"),
+            PathBuf::from("data/a\r.txt"),
+            not_utf8,
+        ] {
+            let (result, lines) = execute(
+                build(&scratch, "m", 4).train_on(Source::benign_lines(&path)),
+                &[],
+            );
+            assert!(
+                matches!(result, Err(BuildError::InvalidSetting(_))),
+                "{path:?}"
+            );
+            assert!(lines.is_empty());
+        }
+        let (result, lines) = execute(
+            build(&scratch, "m", 4),
+            &[("STRING2FINGERPRINT_MODEL_M", "a\ncargo::warning=injected")],
+        );
+        assert!(matches!(result, Err(BuildError::InvalidSetting(_))));
+        assert!(lines.is_empty());
 
         let mut invalid = config();
         invalid.epochs = 0;
@@ -1164,7 +1330,7 @@ mod tests {
         for (error, message) in [
             (
                 BuildError::InvalidName,
-                "model name must be 1 to 64 ASCII letters, digits, underscores, or hyphens",
+                "model name must be 1 to 64 lowercase ASCII letters, digits, or underscores",
             ),
             (
                 BuildError::MissingOutDir,
@@ -1183,7 +1349,7 @@ mod tests {
             assert!(error.source().is_none());
         }
         assert_eq!(
-            model_variable("my-waf_2"),
+            model_variable("my_waf_2"),
             "STRING2FINGERPRINT_MODEL_MY_WAF_2"
         );
         assert_eq!(Source::corpus("a/b.bin").path(), Path::new("a/b.bin"));

@@ -58,9 +58,11 @@ mod tests {
         assert!(count(&attacks, &at_128) * 10 >= attacks.len() * 4);
 
         // The thresholds were chosen on the few held-out samples, so they
-        // are only required to flag more attacks than benign text.
+        // are only required to flag more attacks than benign text, and
+        // little benign text.
         let calibrated = |input: &[u8]| flagged(&scorer, input);
         assert!(count(&attacks, &calibrated) > count(&benign, &calibrated));
+        assert!(count(&benign, &calibrated) * 10 <= benign.len());
         assert_ne!(THRESHOLDS, Thresholds::uniform(Threshold::at(128)));
     }
 }
