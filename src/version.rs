@@ -1126,10 +1126,10 @@ mod tests {
         let many = vec!["1"; MAX_COMPARATORS + 1].join(",");
         assert_eq!(VersionReq::parse(&many), Err(VersionError::TooLong));
         // The canonical text writes `^`, a separator, and longer numbers.
-        let wide = vec!["10000000"; 24].join(",");
+        let wide = ["10000000"; 24].join(",");
         assert!(wide.len() <= MAX_REQUIREMENT_LEN);
         assert_eq!(VersionReq::parse(&wide), Err(VersionError::TooLong));
-        let fits = vec!["^10000000"; 23].join(", ");
+        let fits = ["^10000000"; 23].join(", ");
         assert!(fits.len() <= MAX_REQUIREMENT_LEN);
         assert_eq!(requirement(&fits).to_string(), fits);
         // Only spaces separate tokens, as in Cargo.
