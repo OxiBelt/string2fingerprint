@@ -13,15 +13,21 @@
 //! `1.4.0-rc.1+build.5`. Versions are ordered by the precedence that the
 //! specification defines.
 //!
-//! A [`VersionReq`] has the syntax and the matching rules of version
-//! requirements in Cargo: comparators separated by commas, which a version
-//! must all match. A comparator is an operator (`=`, `>`, `>=`, `<`, `<=`,
+//! A [`VersionReq`] has the matching rules of version requirements in Cargo,
+//! and a subset of their syntax: comparators separated by commas, which a
+//! version must all match. A comparator is an operator (`=`, `>`, `>=`, `<`, `<=`,
 //! `~`, or `^`) and a version whose minor and patch numbers may be left
 //! out, a version without an operator, which means `^`, or a wildcard such
 //! as `1.*`. `*` alone matches every version without a pre-release. A version
 //! with a pre-release matches only when a comparator names the same major,
 //! minor, and patch numbers with a pre-release of its own, so that
 //! `>=1.0.0, <2.0.0` matches neither `1.5.0-rc.1` nor `2.0.0-rc.1`.
+//!
+//! Cargo also accepts a few spellings that it rewrites into those above:
+//! `x` and `X` for `*`, an operator before a wildcard, `1.*.*`, and build
+//! metadata in a comparator. They are refused here, so that every
+//! requirement has one spelling that Cargo reads the same way. Like Cargo,
+//! a requirement has at most [`MAX_COMPARATORS`] comparators.
 //!
 //! ```
 //! use string2fingerprint::version::{Version, VersionReq};
@@ -39,8 +45,8 @@
 //! ```
 //!
 //! Both types have one canonical text, which [`Display`](fmt::Display)
-//! writes and which a model file stores. Parsing accepts spaces around
-//! operators and commas and a version without an operator, and writes them
+//! writes and which a model file stores. Parsing accepts spaces (`' '`,
+//! not other whitespace) around operators and commas and a version without an operator, and writes them
 //! in the canonical form: operators without a space, `^` written out, and
 //! comparators separated by `, `.
 //!
@@ -57,6 +63,10 @@ pub const MAX_VERSION_LEN: usize = 64;
 /// The longest canonical text of a [`VersionReq`], in bytes.
 pub const MAX_REQUIREMENT_LEN: usize = 255;
 
+/// The largest number of comparators in a [`VersionReq`], the limit of
+/// Cargo.
+pub const MAX_COMPARATORS: usize = 32;
+
 // A model file stores the length of either text in one byte.
 const _: () = assert!(MAX_VERSION_LEN <= u8::MAX as usize);
 const _: () = assert!(MAX_REQUIREMENT_LEN <= u8::MAX as usize);
@@ -69,8 +79,10 @@ const _: () = assert!(MAX_REQUIREMENT_LEN <= u8::MAX as usize);
 pub enum VersionError {
     /// The text is empty or only spaces.
     Empty,
-    /// A version is longer than [`MAX_VERSION_LEN`], or the canonical text
-    /// of a requirement is longer than [`MAX_REQUIREMENT_LEN`].
+    /// A version is longer than [`MAX_VERSION_LEN`], or a requirement has
+    /// more than [`MAX_COMPARATORS`] comparators, a canonical text longer
+    /// than [`MAX_REQUIREMENT_LEN`], or a text longer than four times
+    /// that.
     TooLong,
     /// A number does not fit in 64 bits.
     Overflow,
@@ -546,15 +558,17 @@ impl VersionReq {
     /// # Errors
     ///
     /// Returns the [`VersionError`] that describes the first problem, and
-    /// [`VersionError::TooLong`] when the canonical text would be longer
-    /// than [`MAX_REQUIREMENT_LEN`] bytes.
+    /// [`VersionError::TooLong`] when the text is longer than four times
+    /// [`MAX_REQUIREMENT_LEN`] bytes, which bounds the work of parsing, or
+    /// when the requirement has more than [`MAX_COMPARATORS`] comparators or
+    /// a canonical text longer than [`MAX_REQUIREMENT_LEN`] bytes.
     pub fn parse(text: &str) -> Result<Self, VersionError> {
-        let bytes = text.trim_ascii().as_bytes();
+        let bytes = text.trim_matches(' ').as_bytes();
         if bytes.is_empty() {
             return Err(VersionError::Empty);
         }
-        // Each comparator takes at least one byte, so a text that is much
-        // longer than the limit is refused before it is parsed.
+        // Refused before parsing, so that the work does not grow with a
+        // text far longer than any canonical one, whatever spaces it holds.
         if bytes.len() > 4 * MAX_REQUIREMENT_LEN {
             return Err(VersionError::TooLong);
         }
@@ -565,6 +579,9 @@ impl VersionReq {
         let mut at = 0;
         loop {
             skip_spaces(bytes, &mut at);
+            if comparators.len() == MAX_COMPARATORS {
+                return Err(VersionError::TooLong);
+            }
             comparators.push(comparator(bytes, &mut at)?);
             skip_spaces(bytes, &mut at);
             if at == bytes.len() {
@@ -582,9 +599,11 @@ impl VersionReq {
     }
 
     /// Returns the requirement `^version`, which matches the versions that
-    /// Cargo treats as compatible with `version`: those with the same
-    /// leftmost nonzero number of major, minor, and patch, that are not
-    /// lower than `version`.
+    /// Cargo treats as compatible with `version`: those not lower than
+    /// `version` with the same numbers up to and including its leftmost
+    /// nonzero one, or the same three numbers for `0.0.x`. A pre-release
+    /// matches only when its numbers are those of `version` and `version`
+    /// has a pre-release.
     ///
     /// Build metadata is left out, because a requirement cannot name it.
     #[must_use]
@@ -782,7 +801,7 @@ fn wildcard_of(mut comparator: Comparator, op: Option<Op>) -> Result<Comparator,
 }
 
 fn skip_spaces(bytes: &[u8], at: &mut usize) {
-    while *at < bytes.len() && bytes[*at].is_ascii_whitespace() {
+    while *at < bytes.len() && bytes[*at] == b' ' {
         *at += 1;
     }
 }
@@ -1099,13 +1118,30 @@ mod tests {
         ] {
             assert_eq!(VersionReq::parse(text), Err(error), "{text:?}");
         }
-        let many = vec!["1"; 128].join(",");
-        assert_eq!(many.len(), 255);
-        // The canonical text writes `^1, ` for each comparator.
+        let most = vec!["^1"; MAX_COMPARATORS].join(", ");
+        assert_eq!(requirement(&most).to_string(), most);
+        assert_eq!(requirement(&most).len(), MAX_COMPARATORS);
+        let many = vec!["1"; MAX_COMPARATORS + 1].join(",");
         assert_eq!(VersionReq::parse(&many), Err(VersionError::TooLong));
-        let fits = vec!["^1"; 64].join(", ");
-        assert_eq!(fits.len(), 254);
+        // The canonical text writes `^`, a separator, and longer numbers.
+        let wide = vec!["10000000"; 24].join(",");
+        assert!(wide.len() <= MAX_REQUIREMENT_LEN);
+        assert_eq!(VersionReq::parse(&wide), Err(VersionError::TooLong));
+        let fits = vec!["^10000000"; 23].join(", ");
+        assert!(fits.len() <= MAX_REQUIREMENT_LEN);
         assert_eq!(requirement(&fits).to_string(), fits);
+        // Only spaces separate tokens, as in Cargo.
+        for text in ["1\t,2", "\t*", "<2.0\n", "^\n3", "\r1"] {
+            assert_eq!(
+                VersionReq::parse(text),
+                Err(VersionError::Syntax),
+                "{text:?}"
+            );
+        }
+        assert_eq!(
+            VersionReq::parse(&format!(">={}1", " ".repeat(4 * MAX_REQUIREMENT_LEN))),
+            Err(VersionError::TooLong)
+        );
         let long_pre = format!("=1.0.0-{}", "a".repeat(MAX_VERSION_LEN + 1));
         assert_eq!(VersionReq::parse(&long_pre), Err(VersionError::TooLong));
         assert_eq!(
