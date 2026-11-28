@@ -156,3 +156,96 @@ fn builders_and_streams_compose() {
         .sum();
     assert_eq!(lexical, 1280);
 }
+
+/// Returns `bytes` with the texts of the layout version and the library
+/// requirement replaced, and the checksum written again, as a model file
+/// of another version of the crate would hold them.
+fn with_versions(bytes: &[u8], layout: &str, requirement: &str) -> Vec<u8> {
+    let layout_len = usize::from(bytes[8]);
+    let requirement_at = 9 + layout_len;
+    let requirement_len = usize::from(bytes[requirement_at]);
+    let mut edited = bytes[..8].to_vec();
+    for text in [layout, requirement] {
+        edited.push(u8::try_from(text.len()).unwrap());
+        edited.extend(text.as_bytes());
+    }
+    edited.extend(&bytes[requirement_at + 1 + requirement_len..bytes.len() - 4]);
+    let checksum = edited.iter().fold(0x811C_9DC5u32, |hash, &byte| {
+        (hash ^ u32::from(byte)).wrapping_mul(0x0100_0193)
+    });
+    edited.extend(checksum.to_le_bytes());
+    edited
+}
+
+#[test]
+fn models_load_only_where_their_versions_fit() {
+    use string2fingerprint::fingerprint::LAYOUT_VERSION;
+    use string2fingerprint::model::{Metadata, ModelError};
+    use string2fingerprint::version::VersionReq;
+
+    let original = EmbeddedModel::Compact.bytes();
+    let current = Metadata::read(original).unwrap();
+    assert_eq!(current, Metadata::current());
+    assert_eq!(
+        with_versions(
+            original,
+            &LAYOUT_VERSION.to_string(),
+            &VersionReq::caret(&string2fingerprint::VERSION).to_string()
+        ),
+        original
+    );
+
+    let cases = [
+        ("2.0.0", "^0.1.0-dev", ModelError::IncompatibleLayout),
+        ("1.1.0", "^0.1.0-dev", ModelError::IncompatibleLayout),
+        ("1.0.0", ">=99.0.0", ModelError::UnsupportedLibrary),
+        ("1.0.0", "1.0.0", ModelError::InvalidMetadata),
+        ("1.0", "^0.1.0-dev", ModelError::InvalidMetadata),
+    ];
+    for (layout, requirement, error) in cases {
+        let bytes = with_versions(original, layout, requirement);
+        assert_eq!(
+            Model::from_bytes(&bytes),
+            Err(error),
+            "{layout} {requirement}"
+        );
+        assert_eq!(Scorer::from_bytes(&bytes).unwrap_err(), error);
+        assert_eq!(
+            Scorer::builder().model_bytes(&bytes).build().unwrap_err(),
+            ScorerError::Model(error)
+        );
+        assert_eq!(
+            DetectorBuilder::new()
+                .preset(Preset::Fast)
+                .model_bytes(&bytes)
+                .build()
+                .unwrap_err(),
+            ScorerError::Model(error)
+        );
+        if error != ModelError::InvalidMetadata {
+            // The versions of a model that does not load can be read.
+            let metadata = Metadata::read(&bytes).unwrap();
+            assert_eq!(metadata.layout_version().as_str(), layout);
+            assert_eq!(metadata.library_requirement().to_string(), requirement);
+            assert_eq!(metadata.check(), Err(error));
+        }
+    }
+
+    // A wider requirement that this version matches loads, and its
+    // detector decides like the embedded model.
+    let wider = format!(">={}, <99", string2fingerprint::VERSION);
+    let bytes = with_versions(original, "1.0.0", &wider);
+    let detector = DetectorBuilder::new()
+        .preset(Preset::Fast)
+        .model_bytes(&bytes)
+        .build()
+        .unwrap();
+    assert_eq!(
+        detector.scorer().model().library_requirement().to_string(),
+        wider
+    );
+    let reference = Detector::with_preset(Preset::Fast);
+    for input in inputs() {
+        assert_eq!(detector.detect(&input), reference.detect(&input));
+    }
+}

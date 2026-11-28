@@ -46,6 +46,7 @@
 //! | Fingerprints | [`fingerprint::Fingerprint`], [`fingerprint::Section`], [`fingerprint::fingerprints`], [`fingerprint::Fingerprinter`], [`fingerprint::window_range`] |
 //! | Kernel and backends | [`Backend`], [`kernel::Kernel`], [`kernel::Weights`] |
 //! | Network | [`model::Model`], [`model::LayerView`], [`model::Logits`], [`model::Trace`] |
+//! | Model versions | [`model::Metadata`], [`fingerprint::LAYOUT_VERSION`], [`VERSION`], [`version::Version`], [`version::VersionReq`] |
 //! | Windows | [`Scorer::windows`], [`Scorer::score_fingerprint`], [`Scorer::logits`] |
 //!
 //! ```

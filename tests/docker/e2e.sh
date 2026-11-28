@@ -260,10 +260,33 @@ else
   fail "fine-tuning the compact model failed"
 fi
 
+echo "== Model versions"
+# Every embedded model and a model trained here load, and their versions
+# and checksums are the same on every host.
+if run sh -c "
+  set -e
+  train --benign $data/benign.txt --labeled $data/attacks.tsv --hidden 4 --epochs 2 --quantized-epochs 1 --out /tmp/small.s2fp 2> /dev/null
+  model_info compact default large strict /tmp/small.s2fp
+" > "$work/versions.txt"; then
+  record "model-info" "$work/versions.txt"
+  if [[ "$(grep -c ': layout [0-9][0-9.]*, library .*, layers ' "$work/versions.txt")" -eq 5 ]]; then
+    pass "model_info loads every embedded model and a trained one"
+  else
+    fail "model_info printed unexpected lines"
+    cat "$work/versions.txt" >&2
+  fi
+else
+  fail "a model did not load in model_info"
+fi
+
 echo "== Failures"
 expect_status 2 "train with an unknown option" train --unknown
 expect_status 2 "train without --out" train --benign "$data/benign.txt"
 expect_status 1 "train with a missing file" train --benign /tmp/missing --out /tmp/model.s2fp
+expect_status 2 "train with a library requirement that this library does not match" \
+  train --benign "$data/benign.txt" --library-requirement '>=999' --out /tmp/model.s2fp
+expect_status 2 "model_info without a model" model_info
+expect_status 1 "model_info with a text file as the model" model_info "$data/benign.txt"
 expect_status 2 "score with two arguments" score default extra
 expect_status 1 "score with a missing model file" score /tmp/missing
 stdin="$work/input_hostile_model" expect_status 1 "score with a model file of random bytes" \

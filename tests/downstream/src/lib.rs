@@ -41,6 +41,19 @@ mod tests {
     }
 
     #[test]
+    fn the_embedded_model_records_its_versions() {
+        let model = model();
+        assert_eq!(
+            model.layout_version(),
+            &string2fingerprint::fingerprint::LAYOUT_VERSION
+        );
+        assert_eq!(
+            model.library_requirement().to_string(),
+            format!(">={}", string2fingerprint::VERSION)
+        );
+    }
+
+    #[test]
     fn the_embedded_model_learned_the_training_data() {
         let scorer = Scorer::with_model(model());
         let lines = |text: &'static str| text.lines().filter(|line| !line.is_empty());
