@@ -196,6 +196,17 @@ n-grams of its blocks with that feature, so a caller can trace a feature back
 to the bytes that raised it. These parts are the layout, and a change to any
 of them needs every model to be retrained.
 
+The layout has a [version](#versions). Its major number changes when any input
+can get a different fingerprint, including a change of the fingerprint length.
+Its minor number changes when the layout gains a part that callers can use and
+no fingerprint changes, and its patch number when it is documented or
+implemented differently and no fingerprint changes. A model of layout `m` is
+compatible with the layout of the crate when `m` has the same major number and
+no pre-release, since minor and patch changes keep every fingerprint. The
+layout version of the crate is 1.0.0 or above and has no pre-release. The
+current layout is 1.0.0, which is also the layout of every earlier revision of
+the crate.
+
 ### Network
 
 The fingerprint feeds a small fully connected network with quantized
@@ -366,6 +377,31 @@ floats. Its exponential, logarithm, and cosine are its own, built from
 them. A batch is divided into a fixed number of parts whose
 gradients are added in a fixed order, whatever thread computed them. A test
 holds the checksum of a model that a fixed run must produce.
+
+## Versions
+
+A version has the form of
+[Semantic Versioning 2.0.0](https://semver.org/spec/v2.0.0.html): three
+numbers without leading zeros, an optional pre-release, and optional build
+metadata, at most 64 bytes in all. Versions are ordered by the precedence of
+that specification, and build metadata, which precedence ignores, only breaks
+ties.
+
+A version requirement has the matching rules of Cargo and a subset of its
+syntax, without the spellings that Cargo rewrites into others: `x` for `*`, an
+operator before a wildcard, `1.*.*`, and build metadata. It is
+`*` or a list of comparators separated by commas. A comparator is an operator
+(`=`, `>`, `>=`, `<`, `<=`, `~`, or `^`) followed by a version whose minor and
+patch numbers may be left out, a version without an operator, which means
+`^`, or a wildcard in place of the minor or patch number, such as `1.*`. Build
+metadata is not part of a requirement. A version matches when it matches every
+comparator. A version with a pre-release also needs a comparator with the same
+major, minor, and patch numbers and a pre-release, so that a pre-release
+matches only a requirement that names its release. The canonical text of a
+requirement writes operators without spaces, writes `^` out, and separates
+comparators with a comma and a space. A requirement has at most 32
+comparators, the limit of Cargo, and its canonical text is at most 255 bytes
+long. Only spaces may separate the tokens of a requirement.
 
 ## Backends
 
