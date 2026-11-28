@@ -17,20 +17,87 @@ present, in this order:
 
 ## Usage
 
+A `Detector` decides an input in one call. It pairs a model with a
+threshold for each category and returns the scores with the categories they
+flag:
+
 ```rust
-use string2fingerprint::{Category, CategorySet, Scorer};
+use string2fingerprint::prelude::*;
 
-// Create one scorer and share it. It is immutable and selects the kernel
+// Create one detector and share it. It is immutable and selects the kernel
 // for the running CPU once.
-let scorer = Scorer::new();
+let detector = Detector::new();
 
+let detection = detector.detect(b"/search?q=1%27%20OR%20%271%27=%271");
+if detection.is_flagged() {
+    // Act on the request, for example log or block it.
+    println!("flagged: {detection}"); // "flagged: sql_injection"
+}
+```
+
+A `Preset` pairs each embedded model with thresholds, and the builder
+changes any of them:
+
+| Preset | Model | Threshold | Attacks flagged | Benign flagged |
+| --- | --- | --- | --- | --- |
+| `fast` | `compact` | 128 | 97.2% | 1.24% |
+| `balanced` | `default` | 128 | 98.1% | 1.19% |
+| `thorough` | `large` | 128 | 98.5% | 1.04% |
+| `blocking` | `strict` | 192 | 96.7% | 0.29% |
+
+The rates are the shares of attack and benign samples of the synthetic test
+split of the [training tools](tools/train/README.md) that are flagged in any
+category. Measure on your own traffic before you act on a decision.
+
+```rust
+use string2fingerprint::detect::Preset;
+use string2fingerprint::{Category, Detector, Threshold};
+
+let detector = Detector::builder()
+    .preset(Preset::Blocking)
+    .category(Category::CommandInjection, Threshold::at(230))
+    .disable(Category::Malformed)
+    .build()?;
+```
+
+A `Scorer` returns the scores without deciding them:
+
+```rust
+use string2fingerprint::{Category, Scorer};
+
+let scorer = Scorer::new();
 let scores = scorer.score(b"/search?q=1%27%20OR%20%271%27=%271");
 if scores.get(Category::SqlInjection) >= 192 {
-    // Act on the request, for example log or block it.
+    // Act on the request.
 }
 for (category, score) in scores.iter() {
     println!("{category}: {score}");
 }
+```
+
+Both score more than one buffer in the same ways:
+
+| Call | Scores |
+| --- | --- |
+| `score_fields` / `detect_fields` | The fields of one message, each on its own, combined by the highest score. |
+| `score_batch`, `score_parallel` | Many inputs, on one thread or several. |
+| `score_reader` | A reader to its end, with a buffer on the stack. |
+| `stream` | An input that arrives in parts, as `ScoreStream` or `DetectionStream`. |
+| `windows` | Each window of a long input, with the bytes it covers. |
+
+A stream gives the same result as the whole input however the input is
+split, and its scores so far never decrease, so a proxy can stop reading a
+body as soon as it is flagged:
+
+```rust
+let mut stream = detector.stream();
+for part in body_parts {
+    stream.update(part);
+    if stream.detection().is_flagged() {
+        break;
+    }
+}
+let detection = stream.finish();
 ```
 
 To decide with a threshold for each category, and to turn a category off:
@@ -100,14 +167,42 @@ measured on real traffic. The [training tools](tools/train/README.md)
 document the data, the measured results of each model, and the limits. Load
 another model with `Model::from_bytes` and `Scorer::with_model`.
 
-To score lines of standard input from the command line, or to measure
-throughput for each backend that the CPU supports:
+To score or decide lines of standard input from the command line, or to
+measure throughput for each backend that the CPU supports:
 
 ```sh
 cargo run --release --example score < lines.txt
 cargo run --release --example score large < lines.txt
+cargo run --release --example detect blocking < lines.txt
 cargo bench
 ```
+
+### Low-Level Interface
+
+Each stage of the pipeline is public, for callers that inspect a score,
+build their own decision, or run the kernel elsewhere:
+
+| Stage | Items |
+| --- | --- |
+| Symbols and n-grams | `fingerprint::lexical_symbol`, `shape_class`, `ngrams`, `Section` |
+| Fingerprints | `fingerprint::Fingerprint`, `fingerprints`, `Fingerprinter`, `window_range` |
+| Kernel and backends | `Backend`, `kernel::Kernel`, `kernel::Weights` |
+| Network | `model::Model`, `LayerView`, `Logits`, `Trace` |
+
+```rust
+use string2fingerprint::fingerprint::fingerprints;
+use string2fingerprint::kernel::Kernel;
+use string2fingerprint::model::Model;
+
+let model = Model::embedded();
+let window = fingerprints(b"{{7*7}}").next().expect("the input has a window");
+// The accumulators and activations of every layer, and the logits.
+let trace = model.trace(Kernel::detect(), &window);
+println!("{:?}", trace.logits());
+```
+
+`Scorer::builder` chooses the model and the backend and reports a model that
+does not parse or a backend that the CPU lacks as one error.
 
 ## Training Your Own Model
 

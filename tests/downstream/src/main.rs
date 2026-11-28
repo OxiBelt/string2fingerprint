@@ -10,10 +10,8 @@
 use std::io::{self, BufRead, Write};
 use std::process::ExitCode;
 
-use string2fingerprint::Scorer;
-
 fn run() -> io::Result<()> {
-    let scorer = Scorer::with_model(s2fp_downstream::model());
+    let detector = s2fp_downstream::detector();
     let mut out = io::BufWriter::new(io::stdout().lock());
     let mut input = io::stdin().lock();
     let mut line = Vec::new();
@@ -28,7 +26,7 @@ fn run() -> io::Result<()> {
                 line.pop();
             }
         }
-        writeln!(out, "{}", s2fp_downstream::flagged(&scorer, &line))?;
+        writeln!(out, "{}", detector.detect(&line))?;
     }
     out.flush()
 }

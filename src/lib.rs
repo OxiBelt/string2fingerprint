@@ -15,6 +15,57 @@
 //! - Scores depend only on the input bytes and the model, never on the CPU.
 //!
 //! The design document in `docs/design.md` specifies the full contract.
+//!
+//! # Interfaces
+//!
+//! The high-level interface decides inputs in one call. A [`Detector`]
+//! pairs a model with a threshold for each category, from a
+//! [`Preset`](detect::Preset) or a [`DetectorBuilder`](detect::DetectorBuilder),
+//! and returns a [`Detection`]:
+//!
+//! ```
+//! use string2fingerprint::prelude::*;
+//!
+//! let detector = Detector::new();
+//! let detection = detector.detect(b"/search?q=1%27%20OR%20%271%27=%271");
+//! assert!(detection.contains(Category::SqlInjection));
+//! println!("flagged: {detection}");
+//! ```
+//!
+//! A [`Scorer`] returns the scores without deciding them, and both score
+//! the fields of a message, batches, readers, and input that arrives in
+//! parts through a [`ScoreStream`]. [`Thresholds`] and [`eval`] choose
+//! thresholds on labeled samples, and the `train` and `build` features
+//! train models.
+//!
+//! The low-level interface exposes each stage of the pipeline:
+//!
+//! | Stage | Items |
+//! | --- | --- |
+//! | Symbols and n-grams | [`fingerprint::lexical_symbol`], [`fingerprint::shape_class`], [`fingerprint::ngrams`] |
+//! | Fingerprints | [`fingerprint::Fingerprint`], [`fingerprint::Section`], [`fingerprint::fingerprints`], [`fingerprint::Fingerprinter`], [`fingerprint::window_range`] |
+//! | Kernel and backends | [`Backend`], [`kernel::Kernel`], [`kernel::Weights`] |
+//! | Network | [`model::Model`], [`model::LayerView`], [`model::Logits`], [`model::Trace`] |
+//! | Windows | [`Scorer::windows`], [`Scorer::score_fingerprint`], [`Scorer::logits`] |
+//!
+//! ```
+//! use string2fingerprint::fingerprint::Fingerprinter;
+//! use string2fingerprint::kernel::Kernel;
+//! use string2fingerprint::model::{Logits, Model};
+//! use string2fingerprint::Scorer;
+//!
+//! // The stages by hand give what the scorer gives.
+//! let input = b"<img src=x onerror=alert(document.domain)>";
+//! let model = Model::embedded();
+//! let kernel = Kernel::detect();
+//! let mut fingerprinter = Fingerprinter::new();
+//! let mut logits = Logits::from_array([i8::MIN; 8]);
+//! fingerprinter.update(input, |window| logits = logits.max_with(model.logits(kernel, window)));
+//! if let Some(window) = fingerprinter.finish() {
+//!     logits = logits.max_with(model.logits(kernel, window));
+//! }
+//! assert_eq!(logits.scores(), Scorer::new().score(input));
+//! ```
 
 #[cfg(not(target_os = "linux"))]
 compile_error!("`string2fingerprint` supports Linux targets only");
@@ -29,6 +80,7 @@ pub mod eval;
 pub mod fingerprint;
 pub mod kernel;
 pub mod model;
+pub mod prelude;
 mod scorer;
 mod scores;
 mod stream;
