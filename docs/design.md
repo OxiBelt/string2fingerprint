@@ -250,17 +250,19 @@ Quantization gives each output of a layer its own weight scale: the largest
 weight magnitude of the output maps to 127. The bias is stored in units of
 that scale. The multiplier and the shift of the layer then convert the
 accumulator to a stored activation, or to a logit in units of 1/16 in the
-output layer. The shift is the largest for which every multiplier of the
-layer stays within 30 bits. The result is validated like any other model
+output layer. The shift is the largest for which no multiplier of the layer
+is above 2^30. The result is validated like any other model
 before it is returned.
 
 ### Determinism
 
 The same samples in the same order with the same settings give the same
 model bytes, on every supported host and with any number of threads. The
-trainer uses only additions, multiplications, divisions, and square roots,
-which IEEE 754 rounds exactly, and its own exponential, logarithm, and cosine
-built from them. A batch is divided into a fixed number of parts whose
+trainer uses only operations whose result IEEE 754 or Rust defines exactly:
+additions, multiplications, divisions, square roots, remainders,
+comparisons, rounding to an integer, and conversions between integers and
+floats. Its exponential, logarithm, and cosine are its own, built from
+them. A batch is divided into a fixed number of parts whose
 gradients are added in a fixed order, whatever thread computed them. A test
 holds the checksum of a model that a fixed run must produce.
 
