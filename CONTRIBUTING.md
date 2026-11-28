@@ -77,6 +77,33 @@ Review the lockfile delta. Add automated dependency admission and release
 checks as the relevant dependency or release surfaces develop. Describe public
 compatibility changes and any migration steps alongside the affected contract.
 
+## Continuous Integration
+
+Each workflow in `.github/workflows/` has one purpose:
+
+| Workflow | Checks | Toolchain |
+| --- | --- | --- |
+| `check.yml` | Documentation, formatting, Clippy, Rust documentation, and native builds and tests on x86-64, Arm64, and RISC-V. | Pinned |
+| `toolchains.yml` | Builds and tests with the minimum supported version, stable, beta, and nightly, and each feature on its own. | Each named one |
+
+`check.yml` gates every change on the pinned toolchain, so its results do not
+depend on the day they ran. `toolchains.yml` also runs weekly, because new
+releases change without a change to the repository. Its Clippy runs and its
+nightly jobs report problems without failing, because a new lint or a broken
+nightly release is fixed when the pinned toolchain moves, not in an unrelated
+change. A failing stable or beta build or test does fail it.
+
+The minimum supported version is the `rust-version` in `Cargo.toml`. While it
+equals the pinned toolchain, `check.yml` covers it and the MSRV job only checks
+that. To reproduce a toolchain job locally, set `RUSTUP_TOOLCHAIN`, which takes
+precedence over `rust-toolchain.toml`:
+
+```sh
+rustup toolchain install beta --profile minimal --component clippy
+RUSTUP_TOOLCHAIN=beta cargo test --all-features --locked
+cargo test --locked --features train
+```
+
 ## Commit Messages
 
 Sign commits and use Conventional Commits in the form

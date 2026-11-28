@@ -1,0 +1,162 @@
+name: Rust toolchains
+
+# `check.yml` gates every change on the toolchain that `rust-toolchain.toml`
+# pins. This workflow builds and tests with the minimum supported version
+# from `Cargo.toml` and with the current stable, beta, and nightly
+# releases, so that a new release that breaks the crate is found before it
+# is pinned. It runs weekly too, because those releases change without a
+# change to the repository.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "23 4 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  msrv:
+    name: Minimum supported Rust version
+    runs-on: ubuntu-26.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Read the version that `Cargo.toml` declares
+        id: msrv
+        run: |
+          msrv="$(sed -n 's/^rust-version = "\(.*\)"$/\1/p' Cargo.toml)"
+          pinned="$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)"
+          if [[ ! "$msrv" =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]; then
+            echo "Cargo.toml declares no rust-version" >&2
+            exit 1
+          fi
+          echo "version=$msrv" >> "$GITHUB_OUTPUT"
+          if [[ "$msrv" == "$pinned" ]]; then
+            # `check.yml` already builds and tests with this version.
+            echo "::notice::The minimum supported version $msrv is the pinned toolchain, which check.yml tests"
+            echo "pinned=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install Rust ${{ steps.msrv.outputs.version }}
+        if: steps.msrv.outputs.pinned != 'true'
+        env:
+          MSRV: ${{ steps.msrv.outputs.version }}
+        run: |
+          rustup toolchain install "$MSRV" --profile minimal --no-self-update
+          echo "RUSTUP_TOOLCHAIN=$MSRV" >> "$GITHUB_ENV"
+          RUSTUP_TOOLCHAIN="$MSRV" rustc --version --verbose
+
+      - name: Build
+        if: steps.msrv.outputs.pinned != 'true'
+        run: cargo build --all-targets --all-features --locked
+
+      - name: Run tests
+        if: steps.msrv.outputs.pinned != 'true'
+        run: cargo test --all-features --locked
+
+      - name: Train a model while compiling a dependent crate
+        if: steps.msrv.outputs.pinned != 'true'
+        run: cargo test --locked --manifest-path tests/downstream/Cargo.toml
+
+  release:
+    name: Rust ${{ matrix.toolchain }} (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    # A nightly release can break for reasons outside the crate. Its result
+    # is shown, but it does not fail the workflow.
+    continue-on-error: ${{ matrix.toolchain == 'nightly' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        toolchain: [stable, beta, nightly]
+        arch: [x86_64, aarch64]
+        include:
+          - arch: x86_64
+            runner: ubuntu-26.04
+          - arch: aarch64
+            runner: ubuntu-26.04-arm
+    env:
+      # Takes precedence over `rust-toolchain.toml`.
+      RUSTUP_TOOLCHAIN: ${{ matrix.toolchain }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Rust ${{ matrix.toolchain }}
+        env:
+          TOOLCHAIN: ${{ matrix.toolchain }}
+        run: |
+          rustup toolchain install "$TOOLCHAIN" --profile minimal --component clippy --no-self-update
+          rustc --version --verbose
+
+      - name: Build
+        run: cargo build --all-targets --all-features --locked
+
+      - name: Run tests
+        run: cargo test --all-features --locked
+
+      - name: Check the detected kernel backends with the self-test example
+        run: cargo run --all-features --locked --example kernel_self_test
+
+      - name: Train a model while compiling a dependent crate
+        run: cargo test --locked --manifest-path tests/downstream/Cargo.toml
+
+      - name: Run Clippy
+        # New releases add lints. They are reported here and fixed when the
+        # pinned toolchain moves, so they do not block unrelated changes.
+        continue-on-error: true
+        run: cargo clippy --all-targets --all-features --locked -- -D warnings
+
+  features:
+    name: Features (${{ matrix.name }})
+    runs-on: ubuntu-26.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        # `check.yml` tests every feature together. Each feature is tested
+        # here on its own, so that code which needs one feature cannot rely
+        # on another without saying so.
+        include:
+          - name: none
+            features: ""
+          - name: train
+            features: train
+          - name: build
+            features: build
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install pinned Rust
+        run: |
+          rustup toolchain install --no-self-update
+          rustc --version --verbose
+
+      - name: Build
+        env:
+          FEATURES: ${{ matrix.features }}
+        run: cargo build --all-targets --locked --features "$FEATURES"
+
+      - name: Run tests
+        env:
+          FEATURES: ${{ matrix.features }}
+        run: cargo test --locked --features "$FEATURES"
+
+      - name: Check Rust documentation
+        env:
+          FEATURES: ${{ matrix.features }}
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --no-deps --locked --features "$FEATURES"
