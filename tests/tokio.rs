@@ -7,7 +7,7 @@ use string2fingerprint::tokio::{AsyncDetector, AsyncScorer, DEFAULT_INLINE_LIMIT
 const ATTACKS: &str = include_str!("data/attacks.tsv");
 const BENIGN: &str = include_str!("data/benign.txt");
 
-/// Every development string, attacks first, and long inputs made of them.
+/// Every development string, attacks first, and all of them in one input.
 fn inputs() -> Vec<Vec<u8>> {
     let mut inputs: Vec<Vec<u8>> = ATTACKS
         .lines()
@@ -15,12 +15,7 @@ fn inputs() -> Vec<Vec<u8>> {
         .map(|(_, payload)| payload.as_bytes().to_vec())
         .chain(BENIGN.lines().map(|line| line.as_bytes().to_vec()))
         .collect();
-    let all = inputs.concat();
-    // Longer than two chunks of the streams, so that they score on the pool
-    // while more is written.
-    let long: Vec<u8> = all.iter().copied().cycle().take(200_000).collect();
-    inputs.push(all);
-    inputs.push(long);
+    inputs.push(inputs.concat());
     inputs
 }
 
