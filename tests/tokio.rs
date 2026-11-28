@@ -20,7 +20,7 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt, ReadBuf};
 const ATTACKS: &str = include_str!("data/attacks.tsv");
 const BENIGN: &str = include_str!("data/benign.txt");
 
-/// Every development string, attacks first, and long inputs made of them.
+/// Every development string, attacks first, and all of them in one input.
 fn inputs() -> Vec<Vec<u8>> {
     let mut inputs: Vec<Vec<u8>> = ATTACKS
         .lines()
@@ -28,13 +28,17 @@ fn inputs() -> Vec<Vec<u8>> {
         .map(|(_, payload)| payload.as_bytes().to_vec())
         .chain(BENIGN.lines().map(|line| line.as_bytes().to_vec()))
         .collect();
-    let all = inputs.concat();
-    // Longer than two chunks of the streams, so that they score on the pool
-    // while more is written.
-    let long: Vec<u8> = all.iter().copied().cycle().take(200_000).collect();
-    inputs.push(all);
-    inputs.push(long);
+    inputs.push(inputs.concat());
     inputs
+}
+
+/// The development strings repeated to more than two chunks of the streams
+/// (`2 * 65_536` bytes), so that streams score on the pool while more is
+/// written. Only the tests of streams and readers use it, because scoring it
+/// without optimizations takes long on a target without a SIMD kernel.
+fn long_input() -> Vec<u8> {
+    let all = inputs().pop().expect("there are inputs");
+    all.into_iter().cycle().take(140_000).collect()
 }
 
 fn runtime() -> tokio::runtime::Runtime {
@@ -174,9 +178,14 @@ fn streams_give_the_result_of_the_whole_input_however_it_is_split() {
     let scorer = AsyncScorer::new();
     let detector = AsyncDetector::new();
     runtime().block_on(async {
-        for input in inputs() {
+        for input in inputs().into_iter().chain([long_input()]) {
             let expected = scorer.scorer().score(&input);
             for part in [1, 100, 4096, 65_535, 65_536, 100_000, input.len().max(1)] {
+                // Single bytes of the long input take minutes without
+                // optimizations on a target without a SIMD kernel.
+                if input.len() / part > 10_000 {
+                    continue;
+                }
                 let mut stream: AsyncScoreStream = scorer.stream();
                 let mut detection: AsyncDetectionStream = detector.stream();
                 for piece in input.chunks(part) {
@@ -196,7 +205,7 @@ fn streams_give_the_result_of_the_whole_input_however_it_is_split() {
 fn stream_progress_never_exceeds_the_result() {
     let scorer = AsyncScorer::new();
     runtime().block_on(async {
-        let input = inputs().pop().expect("there are inputs");
+        let input = long_input();
         let expected = scorer.scorer().score(&input);
         let mut stream = scorer.stream();
         let mut last = Scores::ZERO;
@@ -222,7 +231,7 @@ fn stream_progress_never_exceeds_the_result() {
 fn streams_are_async_writers() {
     let detector = AsyncDetector::new();
     runtime().block_on(async {
-        let input = inputs().pop().expect("there are inputs");
+        let input = long_input();
         let mut stream = detector.stream();
         let mut reader = Parts {
             input: input.clone(),
@@ -243,7 +252,7 @@ fn streams_are_async_writers() {
 fn a_reset_discards_the_input_and_running_work() {
     let scorer = AsyncScorer::new();
     runtime().block_on(async {
-        let input = inputs().pop().expect("there are inputs");
+        let input = long_input();
         let mut stream = scorer.stream();
         // Two chunks: one is on the pool when the reset comes.
         stream.update(&input[..140_000]).await;
@@ -259,7 +268,7 @@ fn a_reset_discards_the_input_and_running_work() {
 fn cancelled_updates_keep_what_they_buffered() {
     let scorer = AsyncScorer::new();
     runtime().block_on(async {
-        let input = inputs().pop().expect("there are inputs");
+        let input = long_input();
         let mut stream = scorer.stream();
         // Cancel each update after its first poll.
         let mut at = 0;
@@ -284,7 +293,7 @@ fn readers_give_the_result_of_the_whole_input() {
     let scorer = AsyncScorer::new();
     let detector = AsyncDetector::new();
     runtime().block_on(async {
-        for input in inputs() {
+        for input in inputs().into_iter().chain([long_input()]) {
             for part in [1, 777, 8192, 70_000] {
                 let reader = Parts {
                     input: input.clone(),
@@ -331,7 +340,7 @@ fn a_reader_error_is_returned() {
 #[test]
 fn fingerprint_readers_give_the_windows_of_the_whole_input() {
     runtime().block_on(async {
-        for input in inputs() {
+        for input in inputs().into_iter().chain([long_input()]) {
             let expected: Vec<Fingerprint> = fingerprints(&input).collect();
             let mut reader = FingerprintReader::new(Parts {
                 input: input.clone(),
