@@ -28,10 +28,17 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # The standard library is rebuilt with the sanitizer, so that
+          # memory that it allocates is checked too.
           - arch: x86_64
             runner: ubuntu-26.04
+            build_std: -Zbuild-std
+          # On Arm64, a test binary with a rebuilt standard library crashed
+          # with SIGSEGV before any test ran, while a program with the
+          # shipped library starts. The crate is instrumented either way.
           - arch: aarch64
             runner: ubuntu-26.04-arm
+            build_std: ""
     env:
       RUSTFLAGS: -Zsanitizer=address
       RUSTDOCFLAGS: -Zsanitizer=address
@@ -53,10 +60,10 @@ jobs:
           fi
 
       - name: Lower the address randomization for the sanitizer runtime
-        # Runner kernels randomize `mmap` with more bits than the shadow
-        # memory layout of AddressSanitizer allows, and an instrumented
-        # program then crashes with SIGSEGV before `main`. 28 bits work on
-        # both architectures.
+        # Runner kernels randomize `mmap` with up to 33 bits, more than the
+        # shadow memory layout of AddressSanitizer is known to allow on
+        # some releases. 28 bits are within its limits on both
+        # architectures.
         run: |
           sudo sysctl vm.mmap_rnd_bits
           sudo sysctl -w vm.mmap_rnd_bits=28
@@ -82,19 +89,21 @@ jobs:
       - name: Report the kernel backends that the tests execute
         env:
           ARCH: ${{ matrix.arch }}
+          BUILD_STD: ${{ matrix.build_std }}
         run: >-
-          cargo test -Zbuild-std --target "$ARCH-unknown-linux-gnu" --all-features --locked
+          cargo test ${BUILD_STD:+"$BUILD_STD"} --target "$ARCH-unknown-linux-gnu" --all-features --locked
           --lib backends_are_reported -- --nocapture
 
       - name: Run the tests under AddressSanitizer
         env:
           ARCH: ${{ matrix.arch }}
-        # The standard library is rebuilt with the sanitizer, so that memory
-        # that it allocates is checked too. Documentation tests are left
-        # out, since they would need the same.
-        run: cargo test -Zbuild-std --target "$ARCH-unknown-linux-gnu" --all-features --locked --lib --tests
+          BUILD_STD: ${{ matrix.build_std }}
+        # Documentation tests are left out, since rustdoc would need the
+        # same flags for every test it builds.
+        run: cargo test ${BUILD_STD:+"$BUILD_STD"} --target "$ARCH-unknown-linux-gnu" --all-features --locked --lib --tests
 
       - name: Run the kernel self-test under AddressSanitizer
         env:
           ARCH: ${{ matrix.arch }}
-        run: cargo run -Zbuild-std --target "$ARCH-unknown-linux-gnu" --all-features --locked --example kernel_self_test
+          BUILD_STD: ${{ matrix.build_std }}
+        run: cargo run ${BUILD_STD:+"$BUILD_STD"} --target "$ARCH-unknown-linux-gnu" --all-features --locked --example kernel_self_test
