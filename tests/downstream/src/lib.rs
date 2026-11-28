@@ -1,7 +1,7 @@
 //! Scores text with a model that the build script trained.
 
 use string2fingerprint::model::Model;
-use string2fingerprint::{CategorySet, Scorer, Thresholds};
+use string2fingerprint::{CategorySet, Detector, Scorer, Thresholds};
 
 /// The thresholds that the build script chose on held-out samples.
 pub const THRESHOLDS: Thresholds = match string2fingerprint::include_thresholds!("fixture") {
@@ -13,6 +13,13 @@ pub const THRESHOLDS: Thresholds = match string2fingerprint::include_thresholds!
 #[must_use]
 pub fn model() -> Model {
     string2fingerprint::include_model!("fixture").expect("the build script validated the model")
+}
+
+/// Returns a detector that decides with the model and the thresholds of the
+/// build script.
+#[must_use]
+pub fn detector() -> Detector {
+    Detector::from_parts(Scorer::with_model(model()), THRESHOLDS)
 }
 
 /// Returns the categories that the model flags in `input`.
@@ -64,5 +71,12 @@ mod tests {
         assert!(count(&attacks, &calibrated) > count(&benign, &calibrated));
         assert!(count(&benign, &calibrated) * 10 <= benign.len());
         assert_ne!(THRESHOLDS, Thresholds::uniform(Threshold::at(128)));
+        let detector = detector();
+        for input in benign.iter().chain(&attacks) {
+            assert_eq!(
+                detector.detect(input.as_bytes()).flagged(),
+                calibrated(input.as_bytes())
+            );
+        }
     }
 }

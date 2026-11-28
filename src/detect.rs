@@ -257,8 +257,7 @@ impl Detector {
     /// Returns a builder that starts from [`Preset::Balanced`].
     ///
     /// ```
-    /// use string2fingerprint::detect::Preset;
-    /// use string2fingerprint::{Category, Detector, Threshold};
+    /// use string2fingerprint::{Category, Detector, Preset, Threshold};
     ///
     /// let detector = Detector::builder()
     ///     .preset(Preset::Strict)
