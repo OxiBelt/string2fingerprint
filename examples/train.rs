@@ -32,8 +32,14 @@
 //! `--false-positive-cost CATEGORY=X`, `--false-negative-cost CATEGORY=X`.
 //! `CATEGORY` is a category name or `all`.
 //!
+//! `--library-requirement REQ` states the versions of the library that may
+//! load the model, such as `>=0.1.0-dev, <0.3`, which admits this
+//! pre-release and the releases below 0.3, in place of `^` the version that
+//! trains it. The library that trains the model must match it.
+//!
 //! The model is written to `MODEL` in the format that `Model::from_bytes`
-//! reads. Progress and the report go to standard error. Sample bytes are
+//! reads, with the layout version of the library and the library
+//! requirement. Progress and the report go to standard error. Sample bytes are
 //! never printed.
 //!
 //! `--help` prints the usage. The exit status is 2 for an invalid command
@@ -47,6 +53,7 @@ use std::process::ExitCode;
 use string2fingerprint::eval::Evaluation;
 use string2fingerprint::model::{EmbeddedModel, Model};
 use string2fingerprint::train::{Costs, Dataset, EpochReport, TrainConfig, Trainer};
+use string2fingerprint::version::VersionReq;
 use string2fingerprint::{Category, CategorySet, Scorer, Threshold};
 
 const USAGE: &str =
@@ -91,6 +98,7 @@ struct Options {
     test: Vec<Source>,
     config: TrainConfig,
     base: Option<String>,
+    library_requirement: Option<VersionReq>,
     out: String,
 }
 
@@ -147,6 +155,7 @@ fn parse(arguments: &[String]) -> Result<Option<Options>, Failure> {
     let mut test = Vec::new();
     let mut config = TrainConfig::default();
     let mut base = None;
+    let mut library_requirement = None;
     let mut out = None;
     let mut setting = None;
     let mut weight_option = None;
@@ -186,6 +195,21 @@ fn parse(arguments: &[String]) -> Result<Option<Options>, Failure> {
             "--test-labeled" => source(&mut test, Format::Labeled, 1.0),
             "--out" if out.is_some() => return Err(Failure::usage("`--out` is given twice")),
             "--out" => out = Some(value.clone()),
+            "--library-requirement" if library_requirement.is_some() => {
+                return Err(Failure::usage("`--library-requirement` is given twice"));
+            }
+            "--library-requirement" => {
+                let requirement: VersionReq = value
+                    .parse()
+                    .map_err(|error| Failure::usage(format!("`{option} {value}`: {error}")))?;
+                if !requirement.matches(&string2fingerprint::VERSION) {
+                    return Err(Failure::usage(format!(
+                        "`{option} {requirement}` does not match this library, version {}",
+                        string2fingerprint::VERSION
+                    )));
+                }
+                library_requirement = Some(requirement);
+            }
             "--base" if base.is_some() => return Err(Failure::usage("`--base` is given twice")),
             "--base" => {
                 if let Some(setting) = setting {
@@ -254,6 +278,7 @@ fn parse(arguments: &[String]) -> Result<Option<Options>, Failure> {
         test,
         config,
         base,
+        library_requirement,
         out,
     }))
 }
@@ -336,6 +361,7 @@ fn run(options: Options) -> Result<(), Failure> {
         test,
         config,
         base,
+        library_requirement,
         out,
     } = options;
     let trainer = Trainer::new(config).map_err(Failure::usage)?;
@@ -384,11 +410,24 @@ fn run(options: Options) -> Result<(), Failure> {
     let (mean, largest) = trained.report().quantization_drift();
     eprintln!("quantization moves a score by {mean:.2} on average, {largest:.1} at most");
 
-    let bytes = trained.model().to_bytes();
+    let mut model = trained.into_model();
+    if let Some(requirement) = library_requirement {
+        // The requirement was checked against this library when it was
+        // parsed.
+        model = model
+            .with_library_requirement(requirement)
+            .map_err(Failure::run)?;
+    }
+    let bytes = model.to_bytes();
     fs::write(&out, &bytes).map_err(|error| Failure::run(format!("{out}: {error}")))?;
-    eprintln!("wrote {} bytes to {out}", bytes.len());
+    eprintln!(
+        "wrote {} bytes to {out}: layout {}, library {}",
+        bytes.len(),
+        model.layout_version(),
+        model.library_requirement()
+    );
 
-    let scorer = Scorer::with_model(trained.into_model());
+    let scorer = Scorer::with_model(model);
     report(name, &held_out.evaluate(&scorer));
     Ok(())
 }
