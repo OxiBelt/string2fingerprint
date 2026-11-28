@@ -31,6 +31,8 @@ mod scores;
 #[cfg(test)]
 mod testutil;
 mod thresholds;
+#[cfg(feature = "train")]
+pub mod train;
 
 pub use backend::{Backend, UnsupportedBackend};
 pub use category::Category;

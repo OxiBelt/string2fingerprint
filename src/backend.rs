@@ -159,7 +159,10 @@ pub(crate) struct Verified(Backend);
 
 impl Verified {
     /// The scalar backend, which needs no CPU feature.
-    #[cfg_attr(not(test), expect(dead_code, reason = "used by tests and benchmarks"))]
+    #[cfg_attr(
+        not(any(test, feature = "train")),
+        expect(dead_code, reason = "used by tests and benchmarks")
+    )]
     pub(crate) const SCALAR: Self = Self(Backend::Scalar);
 
     /// Returns the preferred supported backend.

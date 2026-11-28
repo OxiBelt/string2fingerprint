@@ -54,6 +54,9 @@ jobs:
       - name: Run Clippy
         run: cargo clippy --all-targets --all-features --locked -- -D warnings
 
+      - name: Run Clippy without optional features
+        run: cargo clippy --all-targets --locked -- -D warnings
+
       - name: Check Rust documentation
         env:
           RUSTDOCFLAGS: -D warnings

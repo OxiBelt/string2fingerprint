@@ -41,8 +41,12 @@ cargo fmt --all --check
 cargo build --all-targets --all-features --locked
 cargo test --all-features --locked
 cargo clippy --all-targets --all-features --locked -- -D warnings
+cargo clippy --all-targets --locked -- -D warnings
 RUSTDOCFLAGS='-D warnings' cargo doc --all-features --no-deps --locked
 ```
+
+The second Clippy run checks the build without optional features, such as
+`train`.
 
 Use Python 3 for documentation checks and for the tests of the training
 tools. The tests that need NumPy are skipped without it:

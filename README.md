@@ -18,7 +18,7 @@ present, in this order:
 ## Usage
 
 ```rust
-use string2fingerprint::{Category, Scorer};
+use string2fingerprint::{Category, CategorySet, Scorer};
 
 // Create one scorer and share it. It is immutable and selects the kernel
 // for the running CPU once.
@@ -108,6 +108,47 @@ cargo run --release --example score < lines.txt
 cargo run --release --example score large < lines.txt
 cargo bench
 ```
+
+## Training Your Own Model
+
+The `train` feature adds `string2fingerprint::train`, which trains a model
+on your own labeled samples without any other tool or dependency:
+
+```toml
+[dependencies]
+string2fingerprint = { git = "https://github.com/OxiBelt/string2fingerprint", features = ["train"] }
+```
+
+```rust
+use string2fingerprint::train::{Dataset, Sample, TrainConfig, Trainer};
+use string2fingerprint::{Category, CategorySet, Scorer};
+
+let mut data = Dataset::new();
+// One benign sample on each line.
+data.extend_from_lines(&std::fs::read("benign.txt")?, CategorySet::EMPTY)?;
+// Labels, a tab, and a payload on each line, such as
+// `sql_injection,obfuscation<TAB>1%2527 OR 1=1`.
+data.extend_from_labeled_lines(&std::fs::read("attacks.tsv")?)?;
+data.push(Sample::new(b"id=1' OR '1'='1", Category::SqlInjection))?;
+
+// Hold some samples back to measure the model on text it did not see.
+let (train, held_out) = data.split(0.1, 1);
+let trained = Trainer::new(TrainConfig::default())?.train(&train)?;
+std::fs::write("my.s2fp", trained.model().to_bytes())?;
+
+let scorer = Scorer::with_model(trained.into_model());
+let evaluation = held_out.evaluate(&scorer);
+```
+
+A sample is the bytes of one input and the categories that apply to it, and
+benign text has none. Training is deterministic: the same samples and
+settings give the same model bytes on every supported host and with any
+number of threads. `Model::from_bytes` loads the file again.
+
+A model is only as good as its data. The embedded models were trained on
+600,000 generated samples, and a model trained on a few hundred samples knows
+those samples. The [design document](docs/design.md#training) specifies the
+procedure.
 
 ## Status
 
