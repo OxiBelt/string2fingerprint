@@ -98,6 +98,7 @@ Each workflow in `.github/workflows/` has one purpose:
 | `check.yml` | Documentation, formatting, Clippy, Rust documentation, and native builds and tests on x86-64, Arm64, and RISC-V. | Pinned |
 | `toolchains.yml` | Builds and tests with the minimum supported version, stable, beta, and nightly, and each feature on its own. | Each named one |
 | `targets.yml` | Clippy for other Linux targets, tests on big-endian s390x under QEMU and on 32-bit x86, and the refusal of other systems. | Pinned |
+| `docker-e2e.yml` | `tests/docker/e2e.sh` on x86-64 and Arm64, and that both give the same scores and models. | Pinned, in the Rust image |
 
 `check.yml` gates every change on the pinned toolchain, so its results do not
 depend on the day they ran. `toolchains.yml` also runs weekly, because new
