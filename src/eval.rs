@@ -562,7 +562,9 @@ impl Evaluation {
                     return None;
                 }
                 // Costs so large that a total would overflow are scaled by
-                // a power of two, which keeps their order and their ties.
+                // a power of two, which keeps their order and their ties
+                // unless the smaller cost then falls below the normal range
+                // of `f64`. That needs costs that differ by about 2^1000.
                 let total = curve[0].total() as f64;
                 let mut scale = 1.0;
                 while !(false_positive.max(false_negative) * scale * total * 2.0).is_finite() {
