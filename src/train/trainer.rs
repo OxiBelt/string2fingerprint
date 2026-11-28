@@ -265,7 +265,9 @@ impl TrainReport {
     /// quantized model and the score that the float network gives, over the
     /// first windows of the dataset, at most 4096. After
     /// [quantized epochs](TrainConfig::quantized_epochs), the float network
-    /// has the rounded weights that the last epoch evaluated.
+    /// has the final weights rounded as the quantized epochs round them, so
+    /// the difference comes from the integer arithmetic of activations and
+    /// biases alone.
     ///
     /// A mean of about one score step is usual. A much larger value says
     /// that the model lost accuracy when it was quantized, which more
