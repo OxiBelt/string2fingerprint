@@ -121,6 +121,8 @@ jobs:
         run: cargo test --locked --manifest-path tests/downstream/Cargo.toml
 
       - name: Check that the dependent crate trains again only on a change
+        # `bash` runs with `pipefail`, so a failing build is not hidden by `tee`.
+        shell: bash
         run: |
           manifest=tests/downstream/Cargo.toml
           cargo build --locked --manifest-path "$manifest"
