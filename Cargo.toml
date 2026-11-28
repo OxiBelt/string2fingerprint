@@ -27,7 +27,7 @@ tokio = ["dep:tokio", "tokio/rt"]
 tokio = { version = "1.54.1", default-features = false, optional = true }
 
 [dev-dependencies]
-tokio = { version = "1.54.1", default-features = false, features = ["rt", "rt-multi-thread", "macros", "io-util", "fs"] }
+tokio = { version = "1.54.1", default-features = false, features = ["rt", "rt-multi-thread", "macros", "io-util", "io-std", "fs"] }
 
 [lints.rust]
 unsafe_code = "deny"
@@ -40,6 +40,10 @@ harness = false
 [[example]]
 name = "train"
 required-features = ["train"]
+
+[[example]]
+name = "detect_async"
+required-features = ["tokio"]
 
 [[test]]
 name = "tokio"

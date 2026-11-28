@@ -472,6 +472,59 @@ Rules that apply to every backend:
 - The scalar backend is safe Rust and is the reference for every other
   backend. Tests compare each available backend with it.
 
+## Asynchronous Interface
+
+The `tokio` feature adds an interface for Tokio 1.54.1 or later in the
+module `string2fingerprint::tokio`. It changes no result: each asynchronous
+item returns what the synchronous item of the same name returns for the
+same input and model, and keeps the input contract, so scoring and deciding
+never fail. Only I/O fails, with the errors of the caller's reader or of the
+file system.
+
+Scoring is CPU-bound. A future that scores runs one of two ways:
+
+- In the polling task, when its input, or the total cost of its fields or
+  batch, is at most the inline limit of the handle (512 bytes, one window,
+  by default). In the total cost every item with a window counts as at
+  least one window, since scoring it costs at least that, and every other
+  item as one byte. The work runs at
+  the first poll that the task's cooperative budget allows, and takes one
+  unit of the budget.
+- On the blocking pool of the runtime that is current when the method is
+  called, otherwise. The work starts when the method is called. Dropping
+  the future before a thread of the pool took the work drops the work;
+  work that started finishes. A future polled outside any Tokio runtime runs
+  the work in the polling task instead. If the pool cancels the work
+  because its runtime shut down before the work started, the future runs it
+  in the polling task. A panic of the work, which the input contract rules
+  out, resumes in the task that awaits the future.
+
+The futures are named types that own their input and a shared reference to
+the scorer or detector, so they borrow nothing and can be spawned or
+stored. Parallel batches split the inputs into contiguous shares, one job
+on the pool for each.
+
+An asynchronous stream copies what is written into a buffer. While no job
+runs, buffered bytes of at most the inline limit go to the synchronous
+stream at once, in the writing task, and more move, with the synchronous
+stream, into one job on the blocking pool. While that job runs, writes go
+on into a second buffer of up to 64 KiB, and a write waits only when it is
+full; a later write takes back a job that finished. So a stream holds at
+most two buffers of input and one synchronous stream, the bytes reach the
+synchronous stream in order, and the result equals that of the synchronous
+stream however the input was split. Every write takes one unit of the
+cooperative budget. The progress that a stream reports between writes
+counts the bytes that reached the synchronous stream so far. A reset drops
+a job that did not start; one that started finishes on the pool. Readers
+fill such a stream, so reading and scoring overlap.
+
+The asynchronous fingerprint reader runs the fingerprinter in the polling
+task, one block at a time, and returns each window as it completes, taking
+one unit of the cooperative budget for each. A cancelled call loses
+neither bytes nor a completed window. Loading a model parses it,
+and reads its file, on the blocking pool. A file longer than any valid model
+is refused after reading a bounded prefix.
+
 ## Security Considerations
 
 - Inputs are attacker-controlled. Every loop is bounded by the input length,
@@ -483,6 +536,10 @@ Rules that apply to every backend:
 - The default model is trained on synthetic data and has not been measured on
   real traffic. Treat scores as one signal among several, and measure false
   positives on your own traffic before enforcing on them.
+- The asynchronous interface sends inputs longer than its inline limit to
+  Tokio's blocking pool, which starts threads up to the runtime's limit (512
+  unless set) and queues the rest. A server that scores large untrusted
+  bodies bounds how many it scores at once, and the length of each.
 - Unsafe Rust in the library is confined to the target-specific kernel
   modules, to CPU feature queries, and to the opt-in that selects a backend
   without detection. The `kernel_self_test` example calls that opt-in. Each

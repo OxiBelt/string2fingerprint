@@ -36,7 +36,9 @@
 //! the fields of a message, batches, readers, and input that arrives in
 //! parts through a [`ScoreStream`]. [`Thresholds`] and [`eval`] choose
 //! thresholds on labeled samples, and the `train` and `build` features
-//! train models.
+//! train models. The `tokio` feature adds the same interface for Tokio in
+//! `string2fingerprint::tokio`, which runs long inputs on Tokio's blocking
+//! pool and reads and writes through Tokio's I/O traits.
 //!
 //! The low-level interface exposes each stage of the pipeline:
 //!

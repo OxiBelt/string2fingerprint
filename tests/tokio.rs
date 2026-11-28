@@ -4,7 +4,9 @@
 use std::future::Future;
 use std::io;
 use std::pin::{Pin, pin};
-use std::task::{Context, Poll};
+use std::sync::Arc;
+use std::task::{Context, Poll, Wake, Waker};
+use std::thread;
 
 use string2fingerprint::fingerprint::{Fingerprint, fingerprints};
 use string2fingerprint::model::{DEFAULT_MODEL, EmbeddedModel, ModelError};
@@ -40,6 +42,25 @@ fn runtime() -> tokio::runtime::Runtime {
         .worker_threads(2)
         .build()
         .expect("a runtime starts")
+}
+
+/// Polls `future` to completion on this thread without a Tokio runtime.
+fn block_on_without_runtime<F: Future>(future: F) -> F::Output {
+    struct Unpark(thread::Thread);
+    impl Wake for Unpark {
+        fn wake(self: Arc<Self>) {
+            self.0.unpark();
+        }
+    }
+    let waker = Waker::from(Arc::new(Unpark(thread::current())));
+    let mut context = Context::from_waker(&waker);
+    let mut future = pin!(future);
+    loop {
+        match future.as_mut().poll(&mut context) {
+            Poll::Ready(output) => return output,
+            Poll::Pending => thread::park(),
+        }
+    }
 }
 
 /// Returns its input in parts of at most `part` bytes.
@@ -379,6 +400,21 @@ fn models_load_from_bytes_and_files() {
         std::fs::remove_dir_all(&dir).expect("the directory is removed");
         result.expect("the files are written");
     });
+}
+
+#[test]
+fn every_future_completes_without_a_runtime() {
+    let detector = AsyncDetector::new().with_inline_limit(0);
+    let input = inputs().pop().expect("there are inputs");
+    let detection = block_on_without_runtime(detector.detect(input.clone()));
+    assert_eq!(detection, detector.detector().detect(&input));
+    let parallel = block_on_without_runtime(detector.detect_parallel(vec![input.clone(); 3], 3));
+    assert_eq!(parallel, vec![detection; 3]);
+    let read = block_on_without_runtime(detector.detect_reader(&input[..]));
+    assert_eq!(read.expect("no read fails"), detection);
+    let model =
+        block_on_without_runtime(string2fingerprint::tokio::model::from_bytes(DEFAULT_MODEL));
+    assert!(model.is_ok());
 }
 
 #[test]
