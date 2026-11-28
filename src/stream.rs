@@ -32,7 +32,7 @@ use crate::{Scorer, Scores};
 /// assert_eq!(stream.finish(), scorer.score(body));
 /// ```
 #[derive(Clone)]
-pub struct ScoreStream<S: AsRef<Scorer>> {
+pub struct ScoreStream<S> {
     scorer: S,
     fingerprinter: Fingerprinter,
     scores: Scores,
@@ -176,6 +176,30 @@ mod tests {
                 assert_eq!(stream.finish(), expected, "length {len}, parts of {part}");
                 assert!(stream.is_empty());
                 assert_eq!(stream.scores(), Scores::ZERO);
+            }
+        }
+    }
+
+    #[test]
+    fn streams_score_like_the_whole_input_at_random_cuts() {
+        let scorer = Scorer::with_model(random_model(&mut Rng::new(54), &[16]));
+        let mut rng = Rng::new(55);
+        let mut stream = scorer.stream();
+        for len in [0, 2, 300, 511, 512, 513, 1500, 5000] {
+            let mut input = vec![0u8; len];
+            rng.fill(&mut input);
+            let expected = scorer.score(&input);
+            for _ in 0..20 {
+                let mut cuts: Vec<usize> = (0..rng.next_u32() % 10)
+                    .map(|_| rng.next_u32() as usize % (len + 1))
+                    .collect();
+                cuts.sort_unstable();
+                let mut start = 0;
+                for &cut in cuts.iter().chain([&len]) {
+                    stream.update(&input[start..cut]);
+                    start = cut;
+                }
+                assert_eq!(stream.finish(), expected, "length {len}, cuts {cuts:?}");
             }
         }
     }

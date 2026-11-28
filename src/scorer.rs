@@ -309,7 +309,19 @@ impl Scorer {
     /// whole input, and returns [`Scorer::score`] of the bytes read.
     ///
     /// The call reads into a buffer of 8 KiB on the stack and allocates
-    /// nothing. A read interrupted by a signal is retried.
+    /// nothing. A read interrupted by a signal is retried. Work is linear in
+    /// the number of bytes read, and a reader that never ends is read
+    /// forever, so bound an untrusted source with [`io::Read::take`]:
+    ///
+    /// ```
+    /// use std::io::Read;
+    ///
+    /// use string2fingerprint::Scorer;
+    ///
+    /// let body: &[u8] = b"comment=<script>alert(1)</script>";
+    /// let scores = Scorer::new().score_reader(body.take(1 << 20))?;
+    /// # Ok::<(), std::io::Error>(())
+    /// ```
     ///
     /// # Errors
     ///
@@ -321,7 +333,8 @@ impl Scorer {
         loop {
             match reader.read(&mut buffer) {
                 Ok(0) => return Ok(stream.finish()),
-                Ok(read) => stream.update(&buffer[..read]),
+                // A faulty reader can claim more bytes than the buffer holds.
+                Ok(read) => stream.update(&buffer[..read.min(buffer.len())]),
                 Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
                 Err(error) => return Err(error),
             }
@@ -792,7 +805,7 @@ mod tests {
         let expected: Vec<Scores> = inputs.iter().map(|input| scorer.score(input)).collect();
         assert_eq!(scorer.score_batch(&inputs), expected);
         assert!(scorer.score_each(&inputs).eq(expected.iter().copied()));
-        for threads in [0, 1, 2, 3, 8, 100] {
+        for threads in [0, 1, 2, 3, 8, 100, usize::MAX] {
             assert_eq!(
                 scorer.score_parallel(&inputs, threads),
                 expected,
@@ -859,6 +872,18 @@ mod tests {
         }
     }
 
+    /// A faulty reader that claims to have read more than the buffer.
+    struct Boastful<'a>(&'a [u8]);
+
+    impl io::Read for Boastful<'_> {
+        fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+            let take = self.0.len().min(buffer.len());
+            buffer[..take].copy_from_slice(&self.0[..take]);
+            self.0 = &self.0[take..];
+            Ok(if take == 0 { 0 } else { usize::MAX })
+        }
+    }
+
     #[test]
     fn readers_score_like_the_whole_input() {
         let scorer = scorer(18);
@@ -875,6 +900,9 @@ mod tests {
             );
         }
         let input = vec![b'%'; 500];
+        // The claim is not believed beyond the buffer, so the call returns
+        // instead of panicking. The bytes it scores are unspecified.
+        assert!(scorer.score_reader(Boastful(&input)).is_ok());
         let reader = Trickle {
             input: &input,
             interrupted: false,
