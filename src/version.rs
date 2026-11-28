@@ -630,6 +630,34 @@ impl VersionReq {
         self.comparators.is_empty()
     }
 
+    /// Writes the canonical text to `buffer` and returns it, without
+    /// allocating.
+    pub(crate) fn write_canonical<'a>(
+        &self,
+        buffer: &'a mut [u8; MAX_REQUIREMENT_LEN],
+    ) -> &'a [u8] {
+        struct Writer<'a> {
+            buffer: &'a mut [u8; MAX_REQUIREMENT_LEN],
+            len: usize,
+        }
+        impl fmt::Write for Writer<'_> {
+            fn write_str(&mut self, text: &str) -> fmt::Result {
+                let end = self.len + text.len();
+                self.buffer
+                    .get_mut(self.len..end)
+                    .ok_or(fmt::Error)?
+                    .copy_from_slice(text.as_bytes());
+                self.len = end;
+                Ok(())
+            }
+        }
+        let mut writer = Writer { buffer, len: 0 };
+        // Parsing and `caret` keep the canonical text within the buffer.
+        let _ = fmt::write(&mut writer, format_args!("{self}"));
+        let len = writer.len;
+        &buffer[..len]
+    }
+
     fn canonical_len(&self) -> usize {
         struct Counter(usize);
         impl fmt::Write for Counter {
