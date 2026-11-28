@@ -206,6 +206,63 @@ hidden layers and in the weight that training gave to benign text. One of
 them is the default. Their training procedure, data, and measured limits are
 documented with the [training tools](../tools/train/README.md).
 
+## Training
+
+The `train` feature adds a trainer to the library, so that a program that
+depends on the library can produce a model from its own labeled samples. The
+feature adds no dependency. Training data is trusted input: a dataset and a
+trainer allocate memory in proportion to the samples they are given.
+
+### Samples
+
+A sample is the bytes of one input and the set of its labels. A dataset
+stores the fingerprint of every window of a sample, extracted by the same
+code that scoring uses, and not the bytes. An input without a window is
+skipped.
+
+A model scores one window at a time, and training teaches it the labels of a
+sample for each of its windows. A payload usually lies in one window of a
+long input, so its other windows would teach the model to flag the harmless
+text around it. A labeled input with more than one window is therefore
+refused unless the caller states that every window shows the labels. A benign
+input of any length is accepted, and each of its windows is benign.
+
+The score of a sample is the highest score of any of its windows in each
+category, which is the score of its input.
+
+### Procedure
+
+The trainer optimizes a float network with the shape of the quantized one.
+Hidden activations are clamped to the range from 0 to 1, which is the range
+of a stored activation. The loss of a window is the sum over the categories
+of the binary cross-entropy of the logit with the label, so that categories
+stay independent. The optimizer is Adam with decoupled weight decay and a
+step size that falls to zero along a cosine. A share of the features of each
+window can be set to zero at random.
+
+In its last epochs the forward pass rounds the weights of each output to the
+255 levels that they will have, and rounds activations to multiples of 1/255.
+Gradients pass straight through the rounding. The network adapts to the
+quantization that follows.
+
+Quantization gives each output of a layer its own weight scale: the largest
+weight magnitude of the output maps to 127. The bias is stored in units of
+that scale. The multiplier and the shift of the layer then convert the
+accumulator to a stored activation, or to a logit in units of 1/16 in the
+output layer. The shift is the largest for which every multiplier of the
+layer stays within 30 bits. The result is validated like any other model
+before it is returned.
+
+### Determinism
+
+The same samples in the same order with the same settings give the same
+model bytes, on every supported host and with any number of threads. The
+trainer uses only additions, multiplications, divisions, and square roots,
+which IEEE 754 rounds exactly, and its own exponential, logarithm, and cosine
+built from them. A batch is divided into a fixed number of parts whose
+gradients are added in a fixed order, whatever thread computed them. A test
+holds the checksum of a model that a fixed run must produce.
+
 ## Backends
 
 A backend is one implementation of the dot-product kernel. All backends give
