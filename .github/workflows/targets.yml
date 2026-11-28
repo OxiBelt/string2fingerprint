@@ -115,8 +115,9 @@ jobs:
       - name: Run tests
         env:
           TARGET: ${{ matrix.target }}
-        # Documentation tests are compiled for the host only.
-        run: cargo test --target "$TARGET" --all-features --locked --tests
+        # Cargo builds the documentation tests for the target too, with its
+        # linker, and runs them through its runner.
+        run: cargo test --target "$TARGET" --all-features --locked
 
       - name: Train a model on the host for a dependent crate on the target
         env:
