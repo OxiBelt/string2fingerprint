@@ -1,6 +1,7 @@
 //! End-to-end checks of the public scoring API with the embedded model.
 
 use string2fingerprint::fingerprint::{BLOCK_LEN, MIN_INPUT_LEN, fingerprints, window_count};
+use string2fingerprint::model::EmbeddedModel;
 use string2fingerprint::{Backend, Category, Scorer, Scores};
 
 /// A small deterministic generator, so that the tests need no dependency.
@@ -92,26 +93,30 @@ fn every_supported_backend_passes_the_kernel_self_test() {
 
 #[test]
 fn every_supported_backend_returns_the_same_scores() {
-    let reference = Scorer::new().with_backend(Backend::Scalar).unwrap();
     let inputs = stress_inputs();
-    let mut compared = 0;
-    for &backend in Backend::PREFERENCE {
-        let Ok(scorer) = Scorer::new().with_backend(backend) else {
-            assert!(!backend.is_supported());
-            continue;
-        };
-        assert_eq!(scorer.backend(), backend);
-        for (index, input) in inputs.iter().enumerate() {
-            assert_eq!(
-                scorer.score(input),
-                reference.score(input),
-                "backend {backend}, stress input {index}"
-            );
+    for model in EmbeddedModel::ALL {
+        let reference = Scorer::with_embedded(model)
+            .with_backend(Backend::Scalar)
+            .unwrap();
+        let mut compared = 0;
+        for &backend in Backend::PREFERENCE {
+            let Ok(scorer) = Scorer::with_embedded(model).with_backend(backend) else {
+                assert!(!backend.is_supported());
+                continue;
+            };
+            assert_eq!(scorer.backend(), backend);
+            for (index, input) in inputs.iter().enumerate() {
+                assert_eq!(
+                    scorer.score(input),
+                    reference.score(input),
+                    "model {model}, backend {backend}, stress input {index}"
+                );
+            }
+            compared += 1;
         }
-        compared += 1;
+        // The scalar backend is always compared.
+        assert!(compared >= 1);
     }
-    // The scalar backend is always compared.
-    assert!(compared >= 1);
     assert_eq!(Scorer::new().backend(), Backend::detect());
 }
 
@@ -198,26 +203,30 @@ const THRESHOLD: u8 = 128;
 
 #[test]
 fn unambiguous_payloads_are_flagged_in_their_category() {
-    let scorer = Scorer::new();
-    for (index, &(category, payload)) in ATTACKS.iter().enumerate() {
-        let scores = scorer.score(payload);
-        assert!(
-            scores.get(category) >= THRESHOLD,
-            "payload {index} scores {} in {category}",
-            scores.get(category)
-        );
+    for model in EmbeddedModel::ALL {
+        let scorer = Scorer::with_embedded(model);
+        for (index, &(category, payload)) in ATTACKS.iter().enumerate() {
+            let scores = scorer.score(payload);
+            assert!(
+                scores.get(category) >= THRESHOLD,
+                "model {model}, payload {index} scores {} in {category}",
+                scores.get(category)
+            );
+        }
     }
 }
 
 #[test]
 fn ordinary_text_is_not_flagged() {
-    let scorer = Scorer::new();
-    for (index, text) in BENIGN.iter().enumerate() {
-        let scores = scorer.score(text);
-        assert!(
-            !scores.any_at_least(THRESHOLD),
-            "benign text {index} scores {scores:?}"
-        );
+    for model in EmbeddedModel::ALL {
+        let scorer = Scorer::with_embedded(model);
+        for (index, text) in BENIGN.iter().enumerate() {
+            let scores = scorer.score(text);
+            assert!(
+                !scores.any_at_least(THRESHOLD),
+                "model {model}, benign text {index} scores {scores:?}"
+            );
+        }
     }
 }
 

@@ -26,6 +26,14 @@ class PresetTest(unittest.TestCase):
                 self.assertLessEqual(model["quantized_epochs"], model["epochs"])
                 self.assertTrue(model["description"])
 
+    def test_every_preset_is_shipped(self):
+        source = (HERE.parent.parent / "src" / "model.rs").read_text()
+        for model in self.config["models"]:
+            with self.subTest(model=model["name"]):
+                for suffix in (".s2fp", ".golden"):
+                    self.assertTrue((HERE.parent.parent / "models" / (model["name"] + suffix)).is_file())
+                self.assertIn(f'"{model["name"]}"', source)
+
     def test_splits_use_distinct_seeds(self):
         seeds = [split["seed"] for split in self.config["data"]["splits"].values()]
         self.assertEqual(len(seeds), len(set(seeds)))

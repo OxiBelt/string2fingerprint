@@ -1,4 +1,4 @@
-//! Guards the embedded model against a quality regression.
+//! Guards the embedded models against a quality regression.
 //!
 //! `tests/data/attacks.tsv` and `tests/data/benign.txt` are a small
 //! hand-written development set. Its strings do not come from the generator
@@ -7,10 +7,11 @@
 //! fingerprint layout and the training data were designed, so it is not a
 //! held-out test set, and passing it says nothing about real traffic.
 //!
-//! The limits below are looser than the results of the embedded model, which
-//! `tools/train/README.md` records. A retrained model that fails them is
-//! clearly worse.
+//! The limits below are looser than the results of each embedded model,
+//! which `tools/train/README.md` records. A retrained model that fails them
+//! is clearly worse.
 
+use string2fingerprint::model::EmbeddedModel;
 use string2fingerprint::{Category, Scorer};
 
 const ATTACKS: &str = include_str!("data/attacks.tsv");
@@ -19,11 +20,22 @@ const BENIGN: &str = include_str!("data/benign.txt");
 /// A score at or above this value counts as flagged.
 const THRESHOLD: u8 = 128;
 
-/// At least this many attack lines must be flagged in their own category.
-const MIN_ATTACKS_FLAGGED: usize = 59;
+const ATTACK_LINES: usize = 63;
+const BENIGN_LINES: usize = 72;
 
-/// At most this many benign lines may be flagged in any category.
-const MAX_BENIGN_FLAGGED: usize = 2;
+/// For each embedded model: the least number of attack lines that it must
+/// flag in their own category, and the most benign lines that it may flag in
+/// any category. The measured results are 57 and 0 for `compact`, 62 and 0
+/// for `default`, 61 and 0 for `large`, and 61 and 0 for `strict`.
+fn limits(model: EmbeddedModel) -> (usize, usize) {
+    match model {
+        EmbeddedModel::Compact => (54, 2),
+        EmbeddedModel::Default => (59, 2),
+        EmbeddedModel::Large => (58, 2),
+        EmbeddedModel::Strict => (58, 1),
+        _ => (ATTACK_LINES, 0),
+    }
+}
 
 fn category(name: &str) -> Category {
     Category::ALL
@@ -34,39 +46,43 @@ fn category(name: &str) -> Category {
 
 #[test]
 fn development_attacks_are_flagged_in_their_category() {
-    let scorer = Scorer::new();
-    let mut total = 0;
-    let mut flagged = 0;
-    for (index, line) in ATTACKS.lines().enumerate() {
-        let (name, payload) = line.split_once('\t').expect("category, tab, payload");
-        let score = scorer.score(payload.as_bytes()).get(category(name));
-        total += 1;
-        if score >= THRESHOLD {
-            flagged += 1;
-        } else {
-            // Line numbers identify a miss without echoing the payload.
-            eprintln!("attack line {}: {name} scores {score}", index + 1);
+    for model in EmbeddedModel::ALL {
+        let scorer = Scorer::with_embedded(model);
+        let mut total = 0;
+        let mut flagged = 0;
+        for (index, line) in ATTACKS.lines().enumerate() {
+            let (name, payload) = line.split_once('\t').expect("category, tab, payload");
+            let score = scorer.score(payload.as_bytes()).get(category(name));
+            total += 1;
+            if score >= THRESHOLD {
+                flagged += 1;
+            } else {
+                // Line numbers identify a miss without echoing the payload.
+                eprintln!("{model}: attack line {}: {name} scores {score}", index + 1);
+            }
         }
+        eprintln!("{model}: attacks flagged in their category: {flagged} of {total}");
+        assert_eq!(total, ATTACK_LINES);
+        assert!(flagged >= limits(model).0, "{model}: {flagged} of {total}");
     }
-    eprintln!("attacks flagged in their category: {flagged} of {total}");
-    assert_eq!(total, 63);
-    assert!(flagged >= MIN_ATTACKS_FLAGGED, "{flagged} of {total}");
 }
 
 #[test]
 fn development_benign_text_is_rarely_flagged() {
-    let scorer = Scorer::new();
-    let mut total = 0;
-    let mut flagged = 0;
-    for (index, line) in BENIGN.lines().enumerate() {
-        let scores = scorer.score(line.as_bytes());
-        total += 1;
-        if scores.any_at_least(THRESHOLD) {
-            flagged += 1;
-            eprintln!("benign line {}: scores {scores:?}", index + 1);
+    for model in EmbeddedModel::ALL {
+        let scorer = Scorer::with_embedded(model);
+        let mut total = 0;
+        let mut flagged = 0;
+        for (index, line) in BENIGN.lines().enumerate() {
+            let scores = scorer.score(line.as_bytes());
+            total += 1;
+            if scores.any_at_least(THRESHOLD) {
+                flagged += 1;
+                eprintln!("{model}: benign line {}: scores {scores:?}", index + 1);
+            }
         }
+        eprintln!("{model}: benign lines flagged: {flagged} of {total}");
+        assert_eq!(total, BENIGN_LINES);
+        assert!(flagged <= limits(model).1, "{model}: {flagged} of {total}");
     }
-    eprintln!("benign lines flagged: {flagged} of {total}");
-    assert_eq!(total, 72);
-    assert!(flagged <= MAX_BENIGN_FLAGGED, "{flagged} of {total}");
 }

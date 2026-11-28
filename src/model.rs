@@ -185,6 +185,103 @@ pub struct Model {
 /// whose documentation lists the procedure and the measured limits.
 pub const DEFAULT_MODEL: &[u8] = include_bytes!("../models/default.s2fp");
 
+static COMPACT_MODEL: &[u8] = include_bytes!("../models/compact.s2fp");
+static LARGE_MODEL: &[u8] = include_bytes!("../models/large.s2fp");
+static STRICT_MODEL: &[u8] = include_bytes!("../models/strict.s2fp");
+
+/// A model that the crate embeds.
+///
+/// Every embedded model reads the same fingerprint and returns a score for
+/// every [`Category`]. They differ in size, in the time a score takes, and
+/// in the balance between flagged benign text and missed attacks. All were
+/// trained on the same synthetic data with the tools in `tools/train/`,
+/// whose documentation lists the presets and the measured results of each.
+///
+/// ```
+/// use string2fingerprint::model::EmbeddedModel;
+/// use string2fingerprint::Scorer;
+///
+/// let scorer = Scorer::with_embedded(EmbeddedModel::Compact);
+/// assert_eq!(EmbeddedModel::from_name("compact"), Some(EmbeddedModel::Compact));
+/// # let _ = scorer;
+/// ```
+///
+/// A program that calls only [`Model::embedded`] or
+/// [`Scorer::new`](crate::Scorer::new) links only the default model.
+/// [`EmbeddedModel::bytes`] and the functions that call it link every
+/// embedded model, about 1.1 MiB in total.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum EmbeddedModel {
+    /// One hidden layer of 32 units, about 97 KiB. The fastest and the
+    /// least accurate model.
+    Compact,
+    /// Two hidden layers of 64 units, about 198 KiB. [`Model::embedded`]
+    /// returns it.
+    Default,
+    /// Hidden layers of 192 and 96 units, about 597 KiB. The best
+    /// separation, at about three times the cost of the default model.
+    Large,
+    /// The shape of the default model, trained with benign samples weighted
+    /// four times. It flags less benign text and misses more attacks, for
+    /// hosts that block on a score.
+    Strict,
+}
+
+impl EmbeddedModel {
+    /// Every embedded model, from the smallest to the largest, then the
+    /// specialized ones.
+    pub const ALL: [Self; 4] = [Self::Compact, Self::Default, Self::Large, Self::Strict];
+
+    /// Returns the stable lowercase name of the model.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Compact => "compact",
+            Self::Default => "default",
+            Self::Large => "large",
+            Self::Strict => "strict",
+        }
+    }
+
+    /// Returns the model whose [`name`](Self::name) is `name`.
+    #[must_use]
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|model| model.name() == name)
+    }
+
+    /// Returns the bytes of the model in the format of this module.
+    #[must_use]
+    pub fn bytes(self) -> &'static [u8] {
+        match self {
+            Self::Compact => COMPACT_MODEL,
+            Self::Default => DEFAULT_MODEL,
+            Self::Large => LARGE_MODEL,
+            Self::Strict => STRICT_MODEL,
+        }
+    }
+
+    /// Parses the model.
+    ///
+    /// Each call parses [`EmbeddedModel::bytes`] and allocates about their
+    /// size.
+    ///
+    /// # Panics
+    ///
+    /// Never in a build that passed the crate's tests, for the reason that
+    /// [`Model::embedded`] gives.
+    #[must_use]
+    pub fn load(self) -> Model {
+        Model::from_bytes(self.bytes()).expect("every embedded model is valid")
+    }
+}
+
+impl fmt::Display for EmbeddedModel {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.name())
+    }
+}
+
 impl Model {
     /// Returns the default model that the crate embeds.
     ///
@@ -812,34 +909,75 @@ pub(crate) mod tests {
     /// Golden vectors written by `tools/train/train.py`: for each vector, a
     /// fingerprint followed by the scores that the training tools' integer
     /// simulation computed for it.
-    const GOLDEN: &[u8] = include_bytes!("../models/default.golden");
+    fn golden(model: EmbeddedModel) -> &'static [u8] {
+        match model {
+            EmbeddedModel::Compact => include_bytes!("../models/compact.golden"),
+            EmbeddedModel::Default => include_bytes!("../models/default.golden"),
+            EmbeddedModel::Large => include_bytes!("../models/large.golden"),
+            EmbeddedModel::Strict => include_bytes!("../models/strict.golden"),
+        }
+    }
 
     #[test]
     fn embedded_model_is_valid() {
         let model = Model::embedded();
         assert_eq!(model.layer_sizes().last(), Some(Category::COUNT));
-        assert_eq!(Model::from_bytes(DEFAULT_MODEL), Ok(model));
+        assert_eq!(Model::from_bytes(DEFAULT_MODEL), Ok(model.clone()));
+        assert_eq!(EmbeddedModel::Default.load(), model);
     }
 
     #[test]
-    fn embedded_model_matches_golden_vectors_on_every_backend() {
-        let model = Model::embedded();
-        let (vectors, rest) = GOLDEN.as_chunks::<{ FINGERPRINT_LEN + Category::COUNT }>();
-        assert!(rest.is_empty() && !vectors.is_empty());
-        let backends = crate::Backend::PREFERENCE
+    fn every_embedded_model_is_valid_and_distinct() {
+        let mut models: Vec<Model> = Vec::new();
+        for embedded in EmbeddedModel::ALL {
+            let model = embedded.load();
+            assert_eq!(
+                model.layer_sizes().last(),
+                Some(Category::COUNT),
+                "{embedded}"
+            );
+            assert!(models.iter().all(|other| *other != model), "{embedded}");
+            models.push(model);
+        }
+        let sizes: Vec<usize> = EmbeddedModel::ALL
             .iter()
-            .filter_map(|&backend| Verified::new(backend).ok());
-        for backend in backends {
-            for (index, vector) in vectors.iter().enumerate() {
-                let (features, expected) = vector.split_at(FINGERPRINT_LEN);
-                let fingerprint = Fingerprint::from_array(features.try_into().unwrap());
-                let scores = model.infer(backend, &fingerprint);
-                assert_eq!(
-                    scores.as_array().as_slice(),
-                    expected,
-                    "golden vector {index}, backend {}",
-                    backend.get()
-                );
+            .map(|model| model.bytes().len())
+            .collect();
+        assert!(sizes[0] < sizes[1] && sizes[1] < sizes[2], "{sizes:?}");
+    }
+
+    #[test]
+    fn embedded_model_names_round_trip() {
+        for model in EmbeddedModel::ALL {
+            assert_eq!(EmbeddedModel::from_name(model.name()), Some(model));
+            assert_eq!(model.to_string(), model.name());
+        }
+        assert_eq!(EmbeddedModel::from_name("Default"), None);
+        assert_eq!(EmbeddedModel::from_name(""), None);
+    }
+
+    #[test]
+    fn embedded_models_match_golden_vectors_on_every_backend() {
+        for embedded in EmbeddedModel::ALL {
+            let model = embedded.load();
+            let (vectors, rest) =
+                golden(embedded).as_chunks::<{ FINGERPRINT_LEN + Category::COUNT }>();
+            assert!(rest.is_empty() && !vectors.is_empty(), "{embedded}");
+            let backends = crate::Backend::PREFERENCE
+                .iter()
+                .filter_map(|&backend| Verified::new(backend).ok());
+            for backend in backends {
+                for (index, vector) in vectors.iter().enumerate() {
+                    let (features, expected) = vector.split_at(FINGERPRINT_LEN);
+                    let fingerprint = Fingerprint::from_array(features.try_into().unwrap());
+                    let scores = model.infer(backend, &fingerprint);
+                    assert_eq!(
+                        scores.as_array().as_slice(),
+                        expected,
+                        "model {embedded}, golden vector {index}, backend {}",
+                        backend.get()
+                    );
+                }
             }
         }
     }
