@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import re
 import struct
 import sys
 from dataclasses import dataclass
@@ -51,6 +52,21 @@ LOGISTIC = np.array(
 )
 
 
+# The canonical texts that `src/version.rs` writes: a Semantic Versioning
+# 2.0.0 version, and a requirement of at most 32 comparators separated by
+# `, `, each with its operator written out, or a wildcard.
+_NUMBER = r"(?:0|[1-9][0-9]*)"
+_IDENTIFIER = r"(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)"
+_PRE = rf"{_IDENTIFIER}(?:\.{_IDENTIFIER})*"
+_BUILD = r"[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*"
+VERSION_PATTERN = re.compile(rf"{_NUMBER}\.{_NUMBER}\.{_NUMBER}(?:-{_PRE})?(?:\+{_BUILD})?")
+_COMPARATOR = (
+    rf"(?:(?:=|>=|>|<=|<|~|\^){_NUMBER}(?:\.{_NUMBER}(?:\.{_NUMBER}(?:-{_PRE})?)?)?"
+    rf"|{_NUMBER}\.\*|{_NUMBER}\.{_NUMBER}\.\*)"
+)
+REQUIREMENT_PATTERN = re.compile(rf"\*|{_COMPARATOR}(?:, {_COMPARATOR}){{0,31}}")
+
+
 @dataclass(frozen=True)
 class Metadata:
     """The texts that a model records before its dimensions."""
@@ -59,9 +75,12 @@ class Metadata:
     library_requirement: str
 
     def __post_init__(self) -> None:
-        for text, limit in ((self.layout_version, MAX_VERSION_LEN), (self.library_requirement, MAX_REQUIREMENT_LEN)):
-            if not 1 <= len(text) <= limit or not text.isascii() or not text.isprintable():
-                raise ValueError(f"metadata text {text!r} is not 1 to {limit} printable ASCII characters")
+        for text, limit, pattern in (
+            (self.layout_version, MAX_VERSION_LEN, VERSION_PATTERN),
+            (self.library_requirement, MAX_REQUIREMENT_LEN, REQUIREMENT_PATTERN),
+        ):
+            if not 1 <= len(text) <= limit or not pattern.fullmatch(text):
+                raise ValueError(f"{text!r} is not a version or requirement in canonical form of at most {limit} bytes")
 
 
 def load_metadata(prefix: Path) -> Metadata:
@@ -397,13 +416,19 @@ def main(argv: list[str]) -> int:
     def log(message: str) -> None:
         print(message, file=sys.stderr, flush=True)
 
-    metadata = load_metadata(arguments.data / "train")
-    for split in ("val", "test"):
-        other = load_metadata(arguments.data / split)
+    try:
+        metadata = load_metadata(arguments.data / "train")
+        others = {split: load_metadata(arguments.data / split) for split in ("val", "test")}
+    except (OSError, ValueError) as error:
+        parser.error(f"{error}; extract the features again with fingerprint_corpus")
+    if arguments.library_requirement is not None:
+        try:
+            metadata = Metadata(metadata.layout_version, arguments.library_requirement)
+        except ValueError as error:
+            parser.error(f"--library-requirement: {error}")
+    for split, other in others.items():
         if other.layout_version != metadata.layout_version:
             parser.error(f"the {split} split has layout {other.layout_version}, train has {metadata.layout_version}")
-    if arguments.library_requirement is not None:
-        metadata = Metadata(metadata.layout_version, arguments.library_requirement)
     log(f"layout {metadata.layout_version}, library {metadata.library_requirement}")
 
     rng = np.random.default_rng(arguments.seed)

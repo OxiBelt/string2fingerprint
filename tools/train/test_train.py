@@ -84,10 +84,23 @@ class QuantizationTest(unittest.TestCase):
             Path(f"{prefix}.x.meta").write_text("layout_version 1.0.0\n")
             with self.assertRaises(ValueError):
                 train.load_metadata(prefix)
-        for layout, requirement in (("", "^1"), ("1.0.0", ""), ("1.0.0", "é"), ("1" * 65, "^1"), ("1.0.0", "^1\n")):
+        invalid = (
+            ("", "^1"), ("1.0.0", ""), ("1.0.0", "é"), ("1" * 65, "^1"), ("1.0.0", "^1\n"),
+            ("1.0", "^1"), ("01.0.0", "^1"), ("1.0.0-01", "^1"), ("1.0.0+", "^1"),
+            ("1.0.0", "1.0.0"), ("1.0.0", ">= 1"), ("1.0.0", ">=1,<2"), ("1.0.0", "^1.2.3+b"),
+            ("1.0.0", ">=1.*"), ("1.0.0", "x"), ("1.0.0", ", ".join(["^1"] * 33)), ("1.0.0", "^" + "1" * 255),
+        )
+        for layout, requirement in invalid:
             with self.subTest(layout=layout, requirement=requirement), self.assertRaises(ValueError):
                 train.Metadata(layout, requirement)
-        train.Metadata("1" * 64, "^" + "1" * 254)
+        valid = (
+            ("1.0.0", "^0.1.0-dev"), ("1.2.3-rc.1+b.7", ">=0.3, <0.5"), ("1.0.0-" + "a" * 58, "*"),
+            ("1.0.0", "=1.2.3-x.7.z.92"), ("1.0.0", "~1, 1.*, 1.2.*, <=2, >0.0.1-0"),
+            ("1.0.0", ", ".join(["^1"] * 32)), ("1.0.0", ", ".join(["^1.0.0-" + "a" * 20] * 8)),
+        )
+        for layout, requirement in valid:
+            with self.subTest(layout=layout, requirement=requirement):
+                train.Metadata(layout, requirement)
 
     def test_benign_weight_lowers_scores_of_benign_samples(self) -> None:
         rng = np.random.default_rng(7)

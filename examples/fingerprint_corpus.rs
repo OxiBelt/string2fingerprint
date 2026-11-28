@@ -12,7 +12,9 @@
 //! The metadata of the features goes to `<features>.meta`, one `key value`
 //! pair on each line: `layout_version`, the fingerprint layout version of the
 //! library, and `library_requirement`, `^` the version of the library. The
-//! training tools write both into the model they train on the features.
+//! training tools write both into the model they train on the features. The
+//! file is written last, through a temporary file that is renamed, so that it
+//! exists only next to complete features.
 
 use std::env;
 use std::fs::{self, File};
@@ -55,14 +57,25 @@ fn main() -> ExitCode {
         return ExitCode::from(2);
     };
     let result = fs::read(corpus).and_then(|corpus| {
+        let meta = format!("{features}.meta");
+        // Features without their metadata are never mistaken for complete.
+        match fs::remove_file(&meta) {
+            Err(error) if error.kind() != io::ErrorKind::NotFound => return Err(error),
+            _ => {}
+        }
+        let written = {
+            let mut features = BufWriter::new(File::create(features)?);
+            let mut labels = BufWriter::new(File::create(labels)?);
+            convert(&corpus, &mut features, &mut labels)?
+        };
         let metadata = format!(
             "layout_version {LAYOUT_VERSION}\nlibrary_requirement {}\n",
             VersionReq::caret(&VERSION)
         );
-        fs::write(format!("{features}.meta"), metadata)?;
-        let mut features = BufWriter::new(File::create(features)?);
-        let mut labels = BufWriter::new(File::create(labels)?);
-        convert(&corpus, &mut features, &mut labels)
+        let partial = format!("{meta}.partial");
+        fs::write(&partial, metadata)?;
+        fs::rename(&partial, &meta)?;
+        Ok(written)
     });
     match result {
         Ok(written) => {
