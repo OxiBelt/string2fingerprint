@@ -57,6 +57,11 @@ jobs:
       - name: Run Clippy without optional features
         run: cargo clippy --all-targets --locked -- -D warnings
 
+      - name: Check the dependent crate with rustfmt and Clippy
+        run: |
+          cargo fmt --check --manifest-path tests/downstream/Cargo.toml
+          cargo clippy --all-targets --locked --manifest-path tests/downstream/Cargo.toml -- -D warnings
+
       - name: Check Rust documentation
         env:
           RUSTDOCFLAGS: -D warnings
@@ -111,3 +116,19 @@ jobs:
 
       - name: Run the benchmark as a smoke test
         run: cargo test --all-features --locked --bench score
+
+      - name: Train a model while compiling a dependent crate
+        run: cargo test --locked --manifest-path tests/downstream/Cargo.toml
+
+      - name: Check that the dependent crate trains again only on a change
+        # `bash` runs with `pipefail`, so a failing build is not hidden by `tee`.
+        shell: bash
+        run: |
+          manifest=tests/downstream/Cargo.toml
+          cargo build --locked --manifest-path "$manifest"
+          cargo build -v --locked --manifest-path "$manifest" 2>&1 | tee unchanged.log
+          grep -q 'Fresh s2fp-downstream' unchanged.log
+          touch tests/data/benign.txt
+          cargo build -v --locked --manifest-path "$manifest" 2>&1 | tee changed.log
+          grep -q 'Dirty s2fp-downstream.*benign.txt. has changed' changed.log
+          rm unchanged.log changed.log
