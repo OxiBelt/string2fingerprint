@@ -58,7 +58,7 @@ jobs:
         # program then crashes with SIGSEGV before `main`. 28 bits work on
         # both architectures.
         run: |
-          sysctl vm.mmap_rnd_bits
+          sudo sysctl vm.mmap_rnd_bits
           sudo sysctl -w vm.mmap_rnd_bits=28
 
       - name: Install the pinned nightly toolchain
