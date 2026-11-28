@@ -251,11 +251,19 @@ requirement on the versions of the crate that may load it. A model loads only
 when its layout is compatible with the layout of the crate and the version of
 the crate matches its requirement, so that a model is never used with a
 fingerprint or a network that it was not trained for. The two checks come
-after the checksum and before the layers, and the layout is checked first. The
-metadata of any model can be read without the checks, so that a caller can
-report why a model does not load. A model that the crate trains or creates
-from layers has the current layout and requires `^` the version of the crate,
-and its requirement can be replaced by any that the crate matches.
+after the checksum and before the input and output dimensions are compared
+with the fingerprint length and the number of categories, and the layout is
+checked first. The metadata of any model can be read without the checks, so
+that a caller can report why a model does not load, even a model of another
+fingerprint length. A model that the crate trains or creates from layers has
+the current layout and requires `^` the version of the crate, and its
+requirement can be replaced by any that the crate matches.
+
+Under the rules of Cargo, a requirement on a pre-release of the crate, such as
+`^0.1.0-dev`, matches neither `0.1.1-dev` nor `0.2.0`. When the version of the
+crate changes, a model that the new version still runs, such as an embedded
+model, is loaded with a new requirement that the caller states, and written
+again.
 
 Format version 2 is the current format. Format version 1 had no metadata, and
 every revision that wrote it extracted layout 1.0.0 and had the version
@@ -393,7 +401,7 @@ comparisons, rounding to an integer, and conversions between integers and
 floats. Its exponential, logarithm, and cosine are its own, built from
 them. A batch is divided into a fixed number of parts whose
 gradients are added in a fixed order, whatever thread computed them. A test
-holds the checksum of a model that a fixed run must produce.
+holds the checksum of the layers of a model that a fixed run must produce.
 
 ## Versions
 

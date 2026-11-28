@@ -671,8 +671,10 @@ impl VersionReq {
             }
         }
         let mut writer = Writer { buffer, len: 0 };
-        // Parsing and `caret` keep the canonical text within the buffer.
-        let _ = fmt::write(&mut writer, format_args!("{self}"));
+        // Parsing and `caret` keep the canonical text within the buffer, so
+        // the write cannot fail.
+        let written = fmt::write(&mut writer, format_args!("{self}"));
+        debug_assert!(written.is_ok(), "a canonical requirement fits its buffer");
         let len = writer.len;
         &buffer[..len]
     }
