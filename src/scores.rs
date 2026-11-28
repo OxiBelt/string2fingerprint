@@ -2,7 +2,7 @@
 
 use core::ops::Index;
 
-use crate::Category;
+use crate::{Category, CategorySet, Threshold, Thresholds};
 
 /// One score for each [`Category`].
 ///
@@ -65,6 +65,32 @@ impl Scores {
         self.0.iter().any(|&score| score >= threshold)
     }
 
+    /// Returns the categories whose score is at least `threshold`.
+    ///
+    /// [`Scores::flagged`] takes a threshold for each category.
+    #[must_use]
+    pub fn at_least(&self, threshold: u8) -> CategorySet {
+        self.flagged(&Thresholds::uniform(Threshold::at(threshold)))
+    }
+
+    /// Returns the categories whose score reaches its threshold.
+    ///
+    /// With the labels of an input as a [`CategorySet`], `flagged - labels`
+    /// are its false positives and `labels - flagged` its false negatives.
+    ///
+    /// ```
+    /// use string2fingerprint::{Category, Scores, Threshold, Thresholds};
+    ///
+    /// let scores = Scores::from_array([0, 200, 200, 0, 0, 0, 0, 0]);
+    /// let thresholds =
+    ///     Thresholds::uniform(Threshold::at(128)).with(Category::Obfuscation, Threshold::at(224));
+    /// assert_eq!(scores.flagged(&thresholds), Category::SqlInjection.into());
+    /// ```
+    #[must_use]
+    pub fn flagged(&self, thresholds: &Thresholds) -> CategorySet {
+        thresholds.flagged(&self.0)
+    }
+
     /// Iterates over every category and its score, ordered by discriminant.
     pub fn iter(&self) -> impl Iterator<Item = (Category, u8)> + '_ {
         Category::ALL.into_iter().zip(self.0)
@@ -91,7 +117,7 @@ impl Index<Category> for Scores {
 #[cfg(test)]
 mod tests {
     use super::Scores;
-    use crate::Category;
+    use crate::{Category, CategorySet, Threshold, Thresholds};
 
     #[test]
     fn zero_is_default() {
@@ -119,6 +145,34 @@ mod tests {
         assert_eq!(scores.max(), (Category::SqlInjection, 200));
         assert!(scores.any_at_least(200));
         assert!(!scores.any_at_least(201));
+    }
+
+    #[test]
+    fn flagged_categories_follow_the_thresholds() {
+        let scores = Scores::from_array([0, 9, 200, 9, 200, 0, 255, 1]);
+        assert_eq!(scores.at_least(0), CategorySet::ALL);
+        assert_eq!(
+            scores.at_least(200),
+            CategorySet::from(Category::SqlInjection)
+                | Category::PathTraversal
+                | Category::TemplateInjection
+        );
+        assert_eq!(scores.at_least(255), Category::TemplateInjection.into());
+        for threshold in 0..=u8::MAX {
+            assert_eq!(
+                !scores.at_least(threshold).is_empty(),
+                scores.any_at_least(threshold)
+            );
+        }
+        assert_eq!(
+            scores.flagged(&Thresholds::uniform(Threshold::NEVER)),
+            CategorySet::EMPTY
+        );
+        let thresholds = Thresholds::uniform(Threshold::NEVER)
+            .with(Category::Obfuscation, Threshold::at(9))
+            .with(Category::MarkupInjection, Threshold::at(10));
+        assert_eq!(scores.flagged(&thresholds), Category::Obfuscation.into());
+        assert_eq!(Scores::ZERO.at_least(1), CategorySet::EMPTY);
     }
 
     #[test]

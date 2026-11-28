@@ -21,6 +21,7 @@ compile_error!("`string2fingerprint` supports Linux targets only");
 
 mod backend;
 mod category;
+mod category_set;
 pub mod fingerprint;
 mod kernel;
 pub mod model;
@@ -28,8 +29,11 @@ mod scorer;
 mod scores;
 #[cfg(test)]
 mod testutil;
+mod thresholds;
 
 pub use backend::{Backend, UnsupportedBackend};
 pub use category::Category;
+pub use category_set::{CategorySet, ParseCategorySetError};
 pub use scorer::Scorer;
 pub use scores::Scores;
+pub use thresholds::{Threshold, Thresholds};
