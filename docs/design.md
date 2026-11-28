@@ -95,7 +95,7 @@ An evaluation keeps the number of positive and negative samples at each
 score for each category, so that every threshold can be evaluated after the
 samples are recorded. Counts saturate instead of overflowing. The rate of `k`
 of `n` samples is the double-precision quotient of the two counts, which is
-the nearest double-precision value to `k / n` when `n` is below 2^53, and a limit
+the nearest double-precision value to `k / n` when `n` is below 2^53. A limit
 on a rate is met when that value is within the limit, so a limit that equals
 `k / n` in decimal is met by `k` of `n`.
 
