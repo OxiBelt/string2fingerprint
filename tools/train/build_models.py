@@ -60,7 +60,8 @@ def make_split(work: Path, name: str, split: dict, join_rate: float, examples: P
     if force or not corpus.exists():
         run([sys.executable, "-B", str(HERE / "dataset.py"), "--seed", str(split["seed"]), "--count", str(split["count"]),
              "--join-rate", str(join_rate), "--out", str(corpus)])
-    if force or not (work / f"{name}.x").exists():
+    # Features from before `fingerprint_corpus` wrote metadata are extracted again.
+    if force or not (work / f"{name}.x").exists() or not (work / f"{name}.x.meta").exists():
         run([str(examples / "fingerprint_corpus"), str(corpus), str(work / f"{name}.x"), str(work / f"{name}.y")])
 
 

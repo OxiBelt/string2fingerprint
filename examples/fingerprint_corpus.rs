@@ -8,13 +8,20 @@
 //! `<features>` and the label byte to `<labels>`. Using the library's own
 //! extractor keeps the training features identical to the features seen at
 //! inference.
+//!
+//! The metadata of the features goes to `<features>.meta`, one `key value`
+//! pair on each line: `layout_version`, the fingerprint layout version of the
+//! library, and `library_requirement`, `^` the version of the library. The
+//! training tools write both into the model they train on the features.
 
 use std::env;
 use std::fs::{self, File};
 use std::io::{self, BufWriter, Write};
 use std::process::ExitCode;
 
-use string2fingerprint::fingerprint::fingerprints;
+use string2fingerprint::VERSION;
+use string2fingerprint::fingerprint::{LAYOUT_VERSION, fingerprints};
+use string2fingerprint::version::VersionReq;
 
 fn convert(corpus: &[u8], features: &mut impl Write, labels: &mut impl Write) -> io::Result<u64> {
     let invalid = |message| io::Error::new(io::ErrorKind::InvalidData, message);
@@ -48,6 +55,11 @@ fn main() -> ExitCode {
         return ExitCode::from(2);
     };
     let result = fs::read(corpus).and_then(|corpus| {
+        let metadata = format!(
+            "layout_version {LAYOUT_VERSION}\nlibrary_requirement {}\n",
+            VersionReq::caret(&VERSION)
+        );
+        fs::write(format!("{features}.meta"), metadata)?;
         let mut features = BufWriter::new(File::create(features)?);
         let mut labels = BufWriter::new(File::create(labels)?);
         convert(&corpus, &mut features, &mut labels)

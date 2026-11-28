@@ -6,7 +6,9 @@ They need NumPy and are skipped without it.
 from __future__ import annotations
 
 import struct
+import tempfile
 import unittest
+from pathlib import Path
 
 try:
     import numpy as np
@@ -53,14 +55,19 @@ class QuantizationTest(unittest.TestCase):
             self.assertGreaterEqual(int(layer.weights.min()), -127)
             self.assertLess(int(np.abs(layer.bias).max()), 2**31)
 
+    METADATA = None if np is None else train.Metadata("1.0.0", ">=0.1.0-dev, <0.3")
+
     def test_encoding_has_the_documented_layout(self) -> None:
         dimensions = [train.FINGERPRINT_LEN, 8, len(train.CATEGORIES)]
-        encoded = train.encode(train.quantize(self.float_model(6, dimensions)))
+        encoded = train.encode(train.quantize(self.float_model(6, dimensions)), self.METADATA)
         self.assertEqual(encoded[:4], b"S2FP")
         version, layer_count, reserved = struct.unpack_from("<HBB", encoded, 4)
         self.assertEqual((version, layer_count, reserved), (train.FORMAT_VERSION, 2, 0))
-        self.assertEqual(list(struct.unpack_from("<3H", encoded, 8)), dimensions)
-        size = 14
+        self.assertEqual(train.FORMAT_VERSION, 2)
+        texts = b"\x051.0.0\x11>=0.1.0-dev, <0.3"
+        self.assertEqual(encoded[8 : 8 + len(texts)], texts)
+        self.assertEqual(list(struct.unpack_from("<3H", encoded, 8 + len(texts))), dimensions)
+        size = 14 + len(texts)
         for inputs, outputs in zip(dimensions, dimensions[1:]):
             size += 4 + 8 * outputs + inputs * outputs
         self.assertEqual(len(encoded), size + 4)
@@ -68,6 +75,19 @@ class QuantizationTest(unittest.TestCase):
         for byte in encoded[:-4]:
             checksum = ((checksum ^ byte) * 0x01000193) & 0xFFFFFFFF
         self.assertEqual(struct.unpack_from("<I", encoded, size)[0], checksum)
+
+    def test_metadata_is_read_and_bounded(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            prefix = Path(directory) / "train"
+            Path(f"{prefix}.x.meta").write_text("layout_version 1.0.0\nlibrary_requirement ^0.1.0-dev\n")
+            self.assertEqual(train.load_metadata(prefix), train.Metadata("1.0.0", "^0.1.0-dev"))
+            Path(f"{prefix}.x.meta").write_text("layout_version 1.0.0\n")
+            with self.assertRaises(ValueError):
+                train.load_metadata(prefix)
+        for layout, requirement in (("", "^1"), ("1.0.0", ""), ("1.0.0", "é"), ("1" * 65, "^1"), ("1.0.0", "^1\n")):
+            with self.subTest(layout=layout, requirement=requirement), self.assertRaises(ValueError):
+                train.Metadata(layout, requirement)
+        train.Metadata("1" * 64, "^" + "1" * 254)
 
     def test_benign_weight_lowers_scores_of_benign_samples(self) -> None:
         rng = np.random.default_rng(7)

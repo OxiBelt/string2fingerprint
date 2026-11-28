@@ -57,6 +57,20 @@ cp "$WORK/out/default.golden" models/default.golden
 metrics. `--benign-weight` scales the loss of benign samples; a value above
 1 trades recall for fewer false positives.
 
+`fingerprint_corpus` writes `SPLIT.x.meta` next to the features, with the
+fingerprint layout version of the library that extracted them and the
+library requirement `^` its version. `train.py` refuses splits of different
+layouts and records both versions in the model, so that the library refuses
+the model where the layout or the version does not fit.
+`--library-requirement` states another range of library versions, such as
+`>=0.1.0-dev, <0.3`, in the canonical form of `VersionReq`: operators without
+spaces and comparators separated by `, `. The `model_info` example prints the
+versions of a model and whether the library loads it:
+
+```sh
+target/release/examples/model_info "$WORK/out/default.s2fp"
+```
+
 Every step is deterministic for its seed on one machine. Floating-point
 training can round differently on another CPU or NumPy build, so a rerun
 elsewhere gives a model with close but not identical parameters.
@@ -64,7 +78,8 @@ elsewhere gives a model with close but not identical parameters.
 Features are extracted by the library itself through the `fingerprint_corpus`
 example, so training sees exactly the features that inference computes. A
 change to the fingerprint layout in `src/fingerprint.rs` invalidates the
-model: regenerate the features and retrain in the same change.
+model: raise `LAYOUT_VERSION` as its documentation describes, regenerate the
+features, and retrain in the same change.
 
 `train.py` evaluates the quantized network with an integer simulation of the
 arithmetic in `docs/design.md`. It writes golden vectors, each a fingerprint
