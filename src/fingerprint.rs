@@ -74,7 +74,10 @@ pub const MAX_COUNT: usize = COUNT_CAP as usize;
 ///
 /// A model of layout `m` loads where this version matches the requirement
 /// `^m`, as [`VersionReq::caret`](crate::version::VersionReq::caret) defines
-/// it, so a model never loads with a layout older than its own.
+/// it, so a model never loads with a layout older than its own. The version
+/// stays at 1.0.0 or above and never has a pre-release: below 1.0.0 a minor
+/// change would refuse every older model, and a pre-release would refuse
+/// every model of another release.
 pub const LAYOUT_VERSION: crate::version::Version = crate::version::Version::new(1, 0, 0);
 
 /// First bucket and bucket count of lexical bigrams with a non-alphanumeric

@@ -201,10 +201,12 @@ can get a different fingerprint. Its minor number changes when features are
 added that were zero in every fingerprint of the earlier layout, so that
 earlier models ignore them. Its patch number changes when no fingerprint
 changes. A model of layout `m` is compatible with the layout of the crate when
-that layout matches the requirement `^m`: the same major number, or the same
-leftmost nonzero number below 1.0.0, and not lower than `m`. The current
-layout is 1.0.0, which is also the layout of every earlier revision of the
-crate.
+that layout matches the requirement `^m`: it is not lower than `m` and has the
+same major number. The layout version stays at 1.0.0 or above and has no
+pre-release, because below 1.0.0 the caret requirement would refuse older
+models at every minor change, and a pre-release would match only models of
+its own release. The current layout is 1.0.0, which is also the layout of
+every earlier revision of the crate.
 
 ### Network
 
@@ -383,9 +385,12 @@ A version has the form of
 [Semantic Versioning 2.0.0](https://semver.org/spec/v2.0.0.html): three
 numbers without leading zeros, an optional pre-release, and optional build
 metadata, at most 64 bytes in all. Versions are ordered by the precedence of
-that specification, which ignores build metadata.
+that specification, and build metadata, which precedence ignores, only breaks
+ties.
 
-A version requirement has the syntax and the matching rules of Cargo. It is
+A version requirement has the matching rules of Cargo and a subset of its
+syntax, without the spellings that Cargo rewrites into others: `x` for `*`, an
+operator before a wildcard, `1.*.*`, and build metadata. It is
 `*` or a list of comparators separated by commas. A comparator is an operator
 (`=`, `>`, `>=`, `<`, `<=`, `~`, or `^`) followed by a version whose minor and
 patch numbers may be left out, a version without an operator, which means
@@ -395,7 +400,9 @@ comparator. A version with a pre-release also needs a comparator with the same
 major, minor, and patch numbers and a pre-release, so that a pre-release
 matches only a requirement that names its release. The canonical text of a
 requirement writes operators without spaces, writes `^` out, and separates
-comparators with a comma and a space. It is at most 255 bytes long.
+comparators with a comma and a space. A requirement has at most 32
+comparators, the limit of Cargo, and its canonical text is at most 255 bytes
+long. Only spaces may separate the tokens of a requirement.
 
 ## Backends
 
