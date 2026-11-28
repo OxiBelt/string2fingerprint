@@ -26,7 +26,7 @@ mod category;
 mod category_set;
 pub mod eval;
 pub mod fingerprint;
-mod kernel;
+pub mod kernel;
 pub mod model;
 mod scorer;
 mod scores;

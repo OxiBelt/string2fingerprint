@@ -57,6 +57,24 @@ impl Backend {
     /// ending with [`Backend::Scalar`].
     pub const PREFERENCE: &'static [Self] = PREFERENCE;
 
+    /// Every backend of every architecture, starting with
+    /// [`Backend::Scalar`], then the backends of x86-64, AArch64, and
+    /// RISC-V 64, each in order of preference.
+    ///
+    /// The type is a slice, so that a new backend does not change it.
+    pub const ALL: &'static [Self] = &[
+        Self::Scalar,
+        Self::Avx512Vnni,
+        Self::AvxVnni,
+        Self::Avx2,
+        Self::SveI8mm,
+        Self::NeonI8mm,
+        Self::NeonDotProd,
+        Self::Neon,
+        Self::RvvZvdot4a8i,
+        Self::Rvv,
+    ];
+
     /// Returns the first backend in [`Backend::PREFERENCE`] that the running
     /// CPU and operating system are detected to support.
     #[must_use]
@@ -68,6 +86,16 @@ impl Backend {
             .unwrap_or(Self::Scalar)
     }
 
+    /// Iterates over the backends of [`Backend::PREFERENCE`] that the
+    /// running CPU and operating system are detected to support, in order
+    /// of preference. The last one is [`Backend::Scalar`].
+    pub fn supported() -> impl Iterator<Item = Self> {
+        Self::PREFERENCE
+            .iter()
+            .copied()
+            .filter(|backend| backend.is_supported())
+    }
+
     /// Returns whether the running CPU and operating system are detected to
     /// support this backend.
     ///
@@ -75,6 +103,50 @@ impl Backend {
     #[must_use]
     pub fn is_supported(self) -> bool {
         crate::kernel::supports(self)
+    }
+
+    /// Returns the CPU features that the kernel of the backend needs.
+    ///
+    /// Detection checks every one of them, except for an experimental
+    /// backend, which is never detected and runs only through an `unsafe`
+    /// opt-in in which the caller vouches for them.
+    ///
+    /// The names are those of the `std` feature detection macros, except
+    /// for features that the macros do not know: `svei8mm` is the Linux name
+    /// of SVE I8MM in `AT_HWCAP2`, `v` the vector extension in `AT_HWCAP`,
+    /// and `zvdot4a8i` the draft extension that no interface reports.
+    /// [`Backend::Scalar`] needs none.
+    #[must_use]
+    pub const fn cpu_features(self) -> &'static [&'static str] {
+        match self {
+            Self::Scalar => &[],
+            Self::Avx512Vnni => &["avx512f", "avx512bw", "avx512vnni"],
+            Self::AvxVnni => &["avx2", "avxvnni"],
+            Self::Avx2 => &["avx2"],
+            Self::SveI8mm => &["neon", "fp16", "sve", "i8mm", "svei8mm"],
+            Self::NeonI8mm => &["neon", "i8mm"],
+            Self::NeonDotProd => &["neon", "dotprod"],
+            Self::Neon => &["neon"],
+            Self::RvvZvdot4a8i => &["v", "zvdot4a8i"],
+            Self::Rvv => &["v"],
+        }
+    }
+
+    /// Returns whether the backend implements an extension that is not
+    /// ratified, which makes it impossible to detect. Only
+    /// [`Backend::RvvZvdot4a8i`] is.
+    #[must_use]
+    pub const fn is_experimental(self) -> bool {
+        matches!(self, Self::RvvZvdot4a8i)
+    }
+
+    /// Returns the backend whose [`name`](Self::name) is `name`.
+    #[must_use]
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::ALL
+            .iter()
+            .copied()
+            .find(|backend| backend.name() == name)
     }
 
     /// Returns a stable `snake_case` identifier, suitable for metric labels.
@@ -154,15 +226,11 @@ impl core::error::Error for UnsupportedBackend {}
 /// Holding a value of this type is the proof that target-specific kernels
 /// rely on. It is created only after detection succeeds, or through an
 /// `unsafe` constructor whose caller vouches for the CPU.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct Verified(Backend);
 
 impl Verified {
     /// The scalar backend, which needs no CPU feature.
-    #[cfg_attr(
-        not(any(test, feature = "train")),
-        expect(dead_code, reason = "used by tests and benchmarks")
-    )]
     pub(crate) const SCALAR: Self = Self(Backend::Scalar);
 
     /// Returns the preferred supported backend.
@@ -233,25 +301,43 @@ mod tests {
 
     #[test]
     fn names_are_unique() {
-        let all = [
-            Backend::Scalar,
-            Backend::Avx512Vnni,
-            Backend::AvxVnni,
-            Backend::Avx2,
-            Backend::SveI8mm,
-            Backend::NeonI8mm,
-            Backend::NeonDotProd,
-            Backend::Neon,
-            Backend::RvvZvdot4a8i,
-            Backend::Rvv,
-        ];
+        let all = Backend::ALL;
         for (index, backend) in all.iter().enumerate() {
             assert!(
                 all[..index]
                     .iter()
                     .all(|other| other.name() != backend.name())
             );
+            assert_eq!(Backend::from_name(backend.name()), Some(*backend));
         }
+        assert_eq!(Backend::from_name("AVX2"), None);
+        assert_eq!(Backend::from_name(""), None);
+    }
+
+    #[test]
+    fn every_preference_is_listed_once() {
+        for backend in Backend::PREFERENCE {
+            assert!(Backend::ALL.contains(backend));
+        }
+        let mut supported: Vec<Backend> = Backend::supported().collect();
+        assert_eq!(supported.first(), Some(&Backend::detect()));
+        assert_eq!(supported.pop(), Some(Backend::Scalar));
+        for &backend in Backend::ALL {
+            assert_eq!(
+                Backend::supported().any(|other| other == backend),
+                backend.is_supported()
+            );
+        }
+    }
+
+    #[test]
+    fn features_name_the_detected_extensions() {
+        for &backend in Backend::ALL {
+            let features = backend.cpu_features();
+            assert_eq!(features.is_empty(), backend == Backend::Scalar);
+            assert_eq!(features.contains(&"zvdot4a8i"), backend.is_experimental());
+        }
+        assert!(!Backend::Rvv.is_experimental());
     }
 
     #[test]

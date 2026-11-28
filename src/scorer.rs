@@ -2,7 +2,7 @@
 
 use crate::backend::{UnsupportedBackend, Verified};
 use crate::fingerprint::{Fingerprint, fingerprints};
-use crate::kernel::selftest;
+use crate::kernel::{Kernel, selftest};
 use crate::model::{EmbeddedModel, Model};
 use crate::{Backend, Scores};
 
@@ -94,10 +94,27 @@ impl Scorer {
         self
     }
 
+    /// Selects the backend of `kernel`.
+    ///
+    /// A kernel proves its CPU features, so this needs no check. Use it to
+    /// share one selection, including one made with
+    /// [`Kernel::new_unchecked`], between scorers.
+    #[must_use]
+    pub fn with_kernel(mut self, kernel: Kernel) -> Self {
+        self.backend = kernel.verified();
+        self
+    }
+
     /// Returns the backend in use.
     #[must_use]
     pub fn backend(&self) -> Backend {
         self.backend.get()
+    }
+
+    /// Returns the kernel in use, which runs on [`Scorer::backend`].
+    #[must_use]
+    pub fn kernel(&self) -> Kernel {
+        Kernel::from_verified(self.backend)
     }
 
     /// Checks the kernel of the backend in use against the scalar kernel.
@@ -182,6 +199,17 @@ mod tests {
         assert_eq!(unchecked.backend(), backend);
         let input = b"GET /a/../../etc/passwd?q=%27%20OR%201=1 HTTP/1.1";
         assert_eq!(unchecked.score(input), checked.score(input));
+    }
+
+    #[test]
+    fn kernels_select_the_backend() {
+        let scorer = scorer(10);
+        assert_eq!(scorer.kernel(), Kernel::detect());
+        let scalar = scorer.clone().with_kernel(Kernel::SCALAR);
+        assert_eq!(scalar.backend(), Backend::Scalar);
+        assert_eq!(scalar.kernel(), Kernel::SCALAR);
+        let input = b"<svg onload=alert(1)>";
+        assert_eq!(scalar.score(input), scorer.score(input));
     }
 
     #[test]

@@ -365,6 +365,10 @@ Rules that apply to every backend:
   they need was detected.
 - A caller can request a specific backend. The request fails when the CPU
   does not support it.
+- A caller can run the kernel of a backend on a matrix of its own, under the
+  same rules. The matrix is validated when it is created, the lengths of the
+  vectors are checked on each call, and a sum wraps at 32 bits on every
+  backend.
 - A backend that the operating system cannot report yet is never selected
   automatically. It is available only through an explicit `unsafe` opt-in in
   which the caller vouches for the CPU.
