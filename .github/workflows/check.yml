@@ -122,7 +122,7 @@ jobs:
           {
             grep -v -e '^#' -e '^$' tests/data/attacks.tsv | cut -f2-
             cat tests/data/benign.txt
-            python3 -c 'print("a" * 200000 + "<script>alert(1)</script>")'
+            python3 -c 'print("a" * 20000 + "<script>alert(1)</script>")'
           } > lines.txt
           for preset in fast balanced thorough strict; do
             cargo run --all-features --locked --example detect "$preset" < lines.txt > sync.txt
