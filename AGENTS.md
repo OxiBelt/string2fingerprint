@@ -17,7 +17,7 @@ backend rules. Change that document together with the behavior it describes.
 - `models/` contains the embedded default model and its golden vectors.
 - `examples/` contains command-line tools that score or decide input,
   convert a training corpus into fingerprints, train a model with the `train`
-  feature, and check the kernel backends.
+  feature, show the versions of model files, and check the kernel backends.
 - `tools/train/` contains the corpus generator and the training tools.
 - `docs/` contains the design document.
 - `tests/` contains Cargo integration tests, with their data in `tests/data/`.

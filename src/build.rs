@@ -120,6 +120,7 @@ use std::time::Instant;
 use crate::eval::{Evaluation, Objective};
 use crate::model::{Model, ModelError};
 use crate::train::{Dataset, DatasetError, TrainConfig, TrainError, TrainReport, Trainer};
+use crate::version::VersionReq;
 use crate::{CategorySet, Scorer, Thresholds};
 
 /// The prefix of the variable that names a model file to use in place of
@@ -369,6 +370,7 @@ pub struct ModelBuild {
     config: Option<TrainConfig>,
     held_out: f64,
     calibration: Option<(Objective, Thresholds)>,
+    library_requirement: Option<VersionReq>,
     out_dir: Option<PathBuf>,
 }
 
@@ -388,6 +390,7 @@ impl ModelBuild {
             config: None,
             held_out: 0.0,
             calibration: None,
+            library_requirement: None,
             out_dir: None,
         }
     }
@@ -456,6 +459,20 @@ impl ModelBuild {
         self
     }
 
+    /// States the versions of this crate that may load the trained model,
+    /// in place of `^` the version that trains it.
+    ///
+    /// The model records the requirement, and
+    /// [`Model::from_bytes`] refuses it in a version of the crate that does
+    /// not match it, such as a later major release. The requirement must
+    /// match the version of the crate that runs the build, or the build
+    /// fails before training. A model file that
+    /// `STRING2FINGERPRINT_MODEL_<NAME>` names keeps its own requirement.
+    pub fn library_requirement(mut self, requirement: VersionReq) -> Self {
+        self.library_requirement = Some(requirement);
+        self
+    }
+
     /// Writes to `dir` in place of the directory in `OUT_DIR`.
     ///
     /// Use this to run a build outside a build script.
@@ -517,6 +534,15 @@ impl ModelBuild {
             if self.validation.is_empty() && self.held_out == 0.0 {
                 return Err(BuildError::NoValidationSamples);
             }
+        }
+        if self
+            .library_requirement
+            .as_ref()
+            .is_some_and(|requirement| !requirement.matches(&crate::VERSION))
+        {
+            return Err(BuildError::InvalidSetting(
+                "the library requirement does not match the version of this crate",
+            ));
         }
 
         let model_variable = model_variable(&self.name);
@@ -617,7 +643,14 @@ impl ModelBuild {
                     ));
                 }
                 let report = trained.report().clone();
-                (trained.into_model(), Some(report))
+                let mut model = trained.into_model();
+                if let Some(requirement) = &self.library_requirement {
+                    // The requirement was checked before training.
+                    model = model
+                        .with_library_requirement(requirement.clone())
+                        .map_err(TrainError::from)?;
+                }
+                (model, Some(report))
             }
         };
 
@@ -796,7 +829,8 @@ mod tests {
     use std::process;
 
     use super::*;
-    use crate::model::EmbeddedModel;
+    use crate::fingerprint::LAYOUT_VERSION;
+    use crate::model::{EmbeddedModel, Metadata};
     use crate::{Category, Threshold};
 
     /// A directory for the files of one test, removed when dropped.
@@ -986,6 +1020,38 @@ mod tests {
         assert_eq!((rest.samples(), held_out.samples()), (60, 20));
         let trained = Trainer::new(config()).unwrap().train(&rest).unwrap();
         assert_eq!(built.model(), trained.model());
+    }
+
+    #[test]
+    fn a_library_requirement_is_recorded_in_the_model() {
+        let scratch = Scratch::new("requirement");
+        let plain = run(build(&scratch, "plain", 20));
+        assert_eq!(plain.model().metadata(), &Metadata::current());
+        let requirement: VersionReq = format!(">={}, <99", crate::VERSION).parse().unwrap();
+        let built = run(build(&scratch, "ranged", 20).library_requirement(requirement.clone()));
+        assert_eq!(built.model().library_requirement(), &requirement);
+        assert_eq!(built.model().layout_version(), &LAYOUT_VERSION);
+        // Only the metadata differs from a build without a requirement.
+        assert_eq!(
+            built.model().layers().collect::<Vec<_>>(),
+            plain.model().layers().collect::<Vec<_>>()
+        );
+        let bytes = fs::read(built.path()).unwrap();
+        assert_eq!(
+            Metadata::read(&bytes).unwrap().library_requirement(),
+            &requirement
+        );
+        assert_eq!(&Model::from_bytes(&bytes).unwrap(), built.model());
+
+        // A requirement that this crate does not match fails before
+        // training and writes nothing.
+        let before = scratch.written();
+        let (result, _) = execute(
+            build(&scratch, "future", 20).library_requirement(">=99".parse().unwrap()),
+            &[],
+        );
+        assert!(matches!(result, Err(BuildError::InvalidSetting(_))));
+        assert_eq!(scratch.written(), before);
     }
 
     #[test]
