@@ -829,6 +829,14 @@ impl Fingerprinter {
     pub const fn windows(&self) -> u64 {
         self.windows
     }
+
+    /// Returns the window that [`update`](Self::update) passed on last, or
+    /// that [`finish`](Self::finish) returned last, which stays until the
+    /// next window is complete.
+    #[cfg(feature = "tokio")]
+    pub(crate) const fn last_window(&self) -> &Fingerprint {
+        &self.output
+    }
 }
 
 /// One n-gram of an input and the feature that counts it.
