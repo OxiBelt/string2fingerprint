@@ -12,6 +12,9 @@
 //! feature it counts in, and [`window_range`] gives the input bytes of a
 //! window.
 //!
+//! [`Fingerprinter`] extracts the same fingerprints from an input that
+//! arrives in parts, such as a request body read from a socket.
+//!
 //! ```
 //! use string2fingerprint::fingerprint::{self, Section};
 //!
@@ -640,6 +643,171 @@ impl ExactSizeIterator for Fingerprints<'_> {}
 
 impl FusedIterator for Fingerprints<'_> {}
 
+/// Extracts the fingerprints of an input that arrives in parts.
+///
+/// The windows are those that [`fingerprints`] yields for the whole input,
+/// in the same order, however the input is split. A window is passed on as
+/// soon as its second block is complete. The last window can only be known
+/// at the end of the input, so [`Fingerprinter::finish`] returns it.
+///
+/// A fingerprinter holds three fingerprint-sized buffers, about 9 KiB, and
+/// no heap memory. Box it or keep it in a long-lived place when that is too
+/// much for a stack.
+///
+/// ```
+/// use string2fingerprint::fingerprint::{Fingerprint, Fingerprinter, fingerprints};
+///
+/// let body = vec![b'a'; 1000];
+/// let mut streamed: Vec<Fingerprint> = Vec::new();
+/// let mut fingerprinter = Fingerprinter::new();
+/// for part in body.chunks(100) {
+///     fingerprinter.update(part, |window| streamed.push(window.clone()));
+/// }
+/// streamed.extend(fingerprinter.finish().cloned());
+/// assert_eq!(streamed, fingerprints(&body).collect::<Vec<_>>());
+/// ```
+#[derive(Clone)]
+pub struct Fingerprinter {
+    state: Rolling,
+    /// The histogram of the last complete block, when `has_previous`.
+    previous: [u8; FINGERPRINT_LEN],
+    /// The histogram of the block being filled.
+    current: [u8; FINGERPRINT_LEN],
+    output: Fingerprint,
+    /// The number of bytes in the block being filled, below [`BLOCK_LEN`].
+    filled: usize,
+    /// Whether a block is complete.
+    has_previous: bool,
+    /// The number of bytes consumed since the input started.
+    len: u64,
+    /// The number of windows passed on since the input started.
+    windows: u64,
+}
+
+/// Shows the counts and nothing derived from the input.
+impl fmt::Debug for Fingerprinter {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Fingerprinter")
+            .field("len", &self.len)
+            .field("windows", &self.windows)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Default for Fingerprinter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Fingerprinter {
+    /// Creates a fingerprinter at the start of an input.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            state: Rolling {
+                lex: 0,
+                shape: 0,
+                alnum: 0,
+                seen: 0,
+            },
+            previous: [0; FINGERPRINT_LEN],
+            current: [0; FINGERPRINT_LEN],
+            output: Fingerprint::ZERO,
+            filled: 0,
+            has_previous: false,
+            len: 0,
+            windows: 0,
+        }
+    }
+
+    /// Consumes the next part of the input and passes the fingerprint of
+    /// every window that it completes to `on_window`, in input order.
+    ///
+    /// A part of `n` bytes completes at most `n / 256 + 1` windows. The work
+    /// is linear in the length of the part, and nothing is allocated.
+    pub fn update(&mut self, part: &[u8], mut on_window: impl FnMut(&Fingerprint)) {
+        let mut rest = part;
+        while !rest.is_empty() {
+            let take = (BLOCK_LEN - self.filled).min(rest.len());
+            let (block, tail) = rest.split_at(take);
+            count_block(&mut self.state, block, &mut self.current);
+            self.filled += take;
+            // A slice is shorter than `u64::MAX` bytes on every target.
+            self.len = self.len.saturating_add(take as u64);
+            rest = tail;
+            if self.filled == BLOCK_LEN {
+                if self.has_previous {
+                    self.output.fill(&self.previous, Some(&self.current));
+                    self.windows += 1;
+                    on_window(&self.output);
+                }
+                core::mem::swap(&mut self.previous, &mut self.current);
+                self.current.fill(0);
+                self.has_previous = true;
+                self.filled = 0;
+            }
+        }
+    }
+
+    /// Ends the input, returns the fingerprint of its last window if no
+    /// call to [`update`](Self::update) passed it on, and starts a new
+    /// input.
+    ///
+    /// An input that ends on a block boundary after its first window has
+    /// no window left. An input shorter than [`MIN_INPUT_LEN`] has no
+    /// window at all.
+    pub fn finish(&mut self) -> Option<&Fingerprint> {
+        let last = if self.filled > 0 {
+            if self.has_previous {
+                self.output.fill(&self.previous, Some(&self.current));
+                true
+            } else if self.len >= MIN_INPUT_LEN as u64 {
+                self.output.fill(&self.current, None);
+                true
+            } else {
+                false
+            }
+        } else if self.has_previous && self.windows == 0 {
+            self.output.fill(&self.previous, None);
+            true
+        } else {
+            false
+        };
+        self.reset();
+        last.then_some(&self.output)
+    }
+
+    /// Discards the input so far and starts a new input.
+    pub fn reset(&mut self) {
+        self.state = Rolling::default();
+        self.previous.fill(0);
+        self.current.fill(0);
+        self.filled = 0;
+        self.has_previous = false;
+        self.len = 0;
+        self.windows = 0;
+    }
+
+    /// Returns the number of bytes consumed since the input started.
+    #[must_use]
+    pub const fn len(&self) -> u64 {
+        self.len
+    }
+
+    /// Returns whether no byte was consumed since the input started.
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    /// Returns the number of windows passed on since the input started.
+    #[must_use]
+    pub const fn windows(&self) -> u64 {
+        self.windows
+    }
+}
+
 /// One n-gram of an input and the feature that counts it.
 ///
 /// [`ngrams`] yields them. The type holds positions and a feature index,
@@ -1230,6 +1398,85 @@ mod tests {
         let zeros = fingerprint.as_array().iter().filter(|&&value| value == 0);
         assert_eq!(nonzero.len() + zeros.count(), FINGERPRINT_LEN);
         assert_eq!(Fingerprint::ZERO.nonzero().count(), 0);
+    }
+
+    /// Fingerprints `input` in the parts that `cuts` gives.
+    fn in_parts(
+        fingerprinter: &mut Fingerprinter,
+        input: &[u8],
+        cuts: &[usize],
+    ) -> Vec<Fingerprint> {
+        let mut windows = Vec::new();
+        let mut start = 0;
+        for &cut in cuts.iter().chain([&input.len()]) {
+            let end = cut.clamp(start, input.len());
+            let before = windows.len();
+            fingerprinter.update(&input[start..end], |window| windows.push(window.clone()));
+            assert!(windows.len() - before <= (end - start) / BLOCK_LEN + 1);
+            assert_eq!(fingerprinter.windows(), windows.len() as u64);
+            start = end;
+        }
+        assert_eq!(fingerprinter.len(), input.len() as u64);
+        windows.extend(fingerprinter.finish().cloned());
+        assert!(fingerprinter.is_empty());
+        assert_eq!(fingerprinter.windows(), 0);
+        windows
+    }
+
+    #[test]
+    fn fingerprinter_matches_fingerprints_however_the_input_is_split() {
+        let mut rng = Rng::new(23);
+        let mut fingerprinter = Fingerprinter::new();
+        let lengths = [
+            0, 1, 2, 3, 100, 255, 256, 257, 511, 512, 513, 768, 769, 1024, 1500, 3000,
+        ];
+        for len in lengths {
+            let mut input = vec![0u8; len];
+            rng.fill(&mut input);
+            input
+                .iter_mut()
+                .for_each(|byte| *byte = b"ab1./%'<\xC3"[usize::from(*byte % 9)]);
+            let expected: Vec<Fingerprint> = fingerprints(&input).collect();
+            // Whole, byte by byte, at every block edge, and at random cuts.
+            let whole: [usize; 0] = [];
+            let bytes: Vec<usize> = (1..len).collect();
+            let edges: Vec<usize> = (1..=len / BLOCK_LEN).map(|n| n * BLOCK_LEN).collect();
+            for cuts in [&whole[..], &bytes, &edges] {
+                assert_eq!(
+                    in_parts(&mut fingerprinter, &input, cuts),
+                    expected,
+                    "length {len}"
+                );
+            }
+            for _ in 0..20 {
+                let mut cuts: Vec<usize> = (0..rng.next_u32() % 8)
+                    .map(|_| rng.next_u32() as usize % (len + 1))
+                    .collect();
+                cuts.sort_unstable();
+                assert_eq!(
+                    in_parts(&mut fingerprinter, &input, &cuts),
+                    expected,
+                    "length {len}, cuts {cuts:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn fingerprinter_reset_discards_the_input() {
+        let mut fingerprinter = Fingerprinter::default();
+        fingerprinter.update(&[b'%'; 700], |_| {});
+        assert_eq!((fingerprinter.len(), fingerprinter.windows()), (700, 1));
+        assert_eq!(
+            format!("{fingerprinter:?}"),
+            "Fingerprinter { len: 700, windows: 1, .. }"
+        );
+        fingerprinter.reset();
+        assert!(fingerprinter.is_empty());
+        let input = b"../../etc/passwd";
+        fingerprinter.update(input, |_| unreachable!("one block completes no window"));
+        assert_eq!(fingerprinter.finish(), fingerprints(input).next().as_ref());
+        assert_eq!(fingerprinter.finish(), None);
     }
 
     #[test]

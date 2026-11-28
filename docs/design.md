@@ -163,6 +163,9 @@ window. It is built without interpreting the input as any particular language.
 4. A window is two adjacent blocks, and consecutive windows share one block.
    An input of at most one block is one window. Any run of up to 257 bytes
    therefore lies completely inside at least one window.
+   An input that arrives in parts gives the same windows however it is split.
+   A window is complete when its second block is, and the last window when
+   the input ends.
 5. Window counts are capped at 15 and mapped through a fixed logarithmic table
    to the range from 0 to 255. The cap bounds how far repeating one n-gram can
    move a score.
