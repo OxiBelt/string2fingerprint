@@ -114,7 +114,7 @@ the two sets of packages cannot be installed together:
 rustup target add s390x-unknown-linux-gnu
 CARGO_TARGET_S390X_UNKNOWN_LINUX_GNU_LINKER=s390x-linux-gnu-gcc \
 CARGO_TARGET_S390X_UNKNOWN_LINUX_GNU_RUNNER='qemu-s390x -L /usr/s390x-linux-gnu' \
-  cargo test --target s390x-unknown-linux-gnu --all-features --locked --tests
+  cargo test --target s390x-unknown-linux-gnu --all-features --locked
 ```
 
 ## Commit Messages
