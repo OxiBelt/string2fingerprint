@@ -221,6 +221,21 @@ the results on the development set.
 `large` separates best on the synthetic split at three times the cost of
 `default`. `tests/model_quality.rs` holds a limit for each model.
 
+The presets of `Detector` pair these models with thresholds. Measured with
+the library on the same test split, with `Dataset::evaluate` over the 59,991
+samples of which 21,446 are benign:
+
+| Preset | Model | Threshold | Attacks flagged | Benign flagged |
+| --- | --- | --- | --- | --- |
+| `fast` | `compact` | 128 | 97.2% | 265, 1.24% |
+| `balanced` | `default` | 128 | 98.1% | 256, 1.19% |
+| `thorough` | `large` | 128 | 98.5% | 222, 1.04% |
+| `strict` | `strict` | 192 | 96.7% | 63, 0.29% |
+
+The library rounds 222 of 21,446 to 1.04%, where the table above gives 1.03%
+for `large`. On the development set the presets flag 57, 62, 61, and 58
+attack strings in their own category and no benign string.
+
 ## Training With the Library
 
 The `train` feature of the crate trains models without Python or NumPy, with

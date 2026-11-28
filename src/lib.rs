@@ -41,7 +41,7 @@ pub mod train;
 pub use backend::{Backend, UnsupportedBackend};
 pub use category::Category;
 pub use category_set::{CategorySet, ParseCategorySetError};
-pub use detect::{Detection, Detector};
+pub use detect::{Detection, DetectionStream, Detector, DetectorBuilder, Preset};
 pub use scorer::{Scorer, ScorerBuilder, ScorerError, WindowScores, Windows};
 pub use scores::Scores;
 pub use stream::ScoreStream;

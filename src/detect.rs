@@ -12,23 +12,24 @@ use crate::{
 
 /// A ready-made pair of an embedded model and thresholds.
 ///
-/// The rates below were measured on the synthetic test split of the
-/// training tools, 59,991 samples of which 21,446 are benign: the share of
-/// attack samples and of benign samples flagged in any category. The data
-/// is synthetic, so measure on your own traffic before acting on a
-/// decision.
+/// The rates below are the shares of attack samples and of benign samples
+/// flagged in any category on the synthetic test split of the training
+/// tools, 59,991 samples of which 21,446 are benign, as recorded in
+/// `tools/train/README.md`. The data is synthetic, so measure on your own
+/// traffic before acting on a decision.
 ///
 /// | Preset | Model | Threshold | Attacks flagged | Benign flagged |
 /// | --- | --- | --- | --- | --- |
 /// | [`Fast`](Self::Fast) | `compact` | 128 | 97.2% | 1.24% |
 /// | [`Balanced`](Self::Balanced) | `default` | 128 | 98.1% | 1.19% |
 /// | [`Thorough`](Self::Thorough) | `large` | 128 | 98.5% | 1.04% |
-/// | [`Blocking`](Self::Blocking) | `strict` | 192 | 96.7% | 0.29% |
+/// | [`Strict`](Self::Strict) | `strict` | 192 | 96.7% | 0.29% |
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum Preset {
     /// The compact model at the score 128, which is a logit of 0. The
-    /// fastest, at a few more missed attacks.
+    /// fastest, and the one that misses the most attacks and flags the most
+    /// benign text.
     Fast,
     /// The default model at the score 128. [`Detector::new`] uses it.
     Balanced,
@@ -36,13 +37,16 @@ pub enum Preset {
     /// three times the cost of [`Preset::Balanced`].
     Thorough,
     /// The strict model at the score 192. A quarter of the benign flags of
-    /// [`Preset::Balanced`], for hosts that block on a decision.
-    Blocking,
+    /// [`Preset::Balanced`] at a few more missed attacks, for hosts that
+    /// block on a decision.
+    Strict,
 }
 
 impl Preset {
     /// Every preset, from the fastest to the strictest.
-    pub const ALL: [Self; 4] = [Self::Fast, Self::Balanced, Self::Thorough, Self::Blocking];
+    ///
+    /// The type is a slice, so that a new preset does not change it.
+    pub const ALL: &'static [Self] = &[Self::Fast, Self::Balanced, Self::Thorough, Self::Strict];
 
     /// Returns the embedded model of the preset.
     #[must_use]
@@ -51,7 +55,7 @@ impl Preset {
             Self::Fast => EmbeddedModel::Compact,
             Self::Balanced => EmbeddedModel::Default,
             Self::Thorough => EmbeddedModel::Large,
-            Self::Blocking => EmbeddedModel::Strict,
+            Self::Strict => EmbeddedModel::Strict,
         }
     }
 
@@ -61,7 +65,7 @@ impl Preset {
     pub const fn thresholds(self) -> Thresholds {
         Thresholds::uniform(Threshold::at(match self {
             Self::Fast | Self::Balanced | Self::Thorough => 128,
-            Self::Blocking => 192,
+            Self::Strict => 192,
         }))
     }
 
@@ -72,14 +76,17 @@ impl Preset {
             Self::Fast => "fast",
             Self::Balanced => "balanced",
             Self::Thorough => "thorough",
-            Self::Blocking => "blocking",
+            Self::Strict => "strict",
         }
     }
 
     /// Returns the preset whose [`name`](Self::name) is `name`.
     #[must_use]
     pub fn from_name(name: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|preset| preset.name() == name)
+        Self::ALL
+            .iter()
+            .copied()
+            .find(|preset| preset.name() == name)
     }
 }
 
@@ -92,7 +99,7 @@ impl fmt::Display for Preset {
 /// The scores of an input and the categories they flag.
 ///
 /// `Display` writes the flagged categories, separated by commas, or
-/// `benign` when none is flagged.
+/// `benign` when none is flagged, and honors width, fill, and alignment.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct Detection {
     scores: Scores,
@@ -178,7 +185,11 @@ impl Detection {
 
 impl fmt::Display for Detection {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Display::fmt(&self.flagged, f)
+        if f.width().is_some() {
+            f.pad(&self.flagged.to_string())
+        } else {
+            fmt::Display::fmt(&self.flagged, f)
+        }
     }
 }
 
@@ -250,7 +261,7 @@ impl Detector {
     /// use string2fingerprint::{Category, Detector, Threshold};
     ///
     /// let detector = Detector::builder()
-    ///     .preset(Preset::Blocking)
+    ///     .preset(Preset::Strict)
     ///     .category(Category::CommandInjection, Threshold::at(230))
     ///     .disable(Category::Malformed)
     ///     .build()?;
@@ -347,7 +358,8 @@ impl Detector {
     }
 
     /// Reads `reader` to its end and decides its scores. See
-    /// [`Scorer::score_reader`].
+    /// [`Scorer::score_reader`], and bound an untrusted source with
+    /// [`io::Read::take`].
     ///
     /// # Errors
     ///
@@ -399,7 +411,7 @@ impl<D: AsRef<Detector>> AsRef<Scorer> for ScorerOf<D> {
 /// assert!(stream.finish().is_flagged());
 /// ```
 #[derive(Clone)]
-pub struct DetectionStream<D: AsRef<Detector>> {
+pub struct DetectionStream<D> {
     stream: ScoreStream<ScorerOf<D>>,
 }
 
@@ -615,7 +627,7 @@ mod tests {
 
     #[test]
     fn presets_name_their_models_and_thresholds() {
-        for preset in Preset::ALL {
+        for &preset in Preset::ALL {
             assert_eq!(Preset::from_name(preset.name()), Some(preset));
             assert_eq!(preset.to_string(), preset.name());
             let detector = Detector::with_preset(preset);
@@ -627,7 +639,7 @@ mod tests {
         assert_eq!(detector.thresholds(), Preset::Balanced.thresholds());
         assert_eq!(detector.scorer().model(), &Model::embedded());
         assert_eq!(
-            Preset::Blocking.thresholds().get(Category::SqlInjection),
+            Preset::Strict.thresholds().get(Category::SqlInjection),
             Threshold::at(192)
         );
     }
@@ -655,6 +667,8 @@ mod tests {
             "obfuscation,sql_injection,path_traversal"
         );
         assert_eq!(Detection::NONE.to_string(), "benign");
+        assert_eq!(format!("[{:>8}]", Detection::NONE), "[  benign]");
+        assert_eq!(format!("[{:-<7}]", Detection::NONE), "[benign-]");
         assert_eq!(Detection::NONE.top(), None);
         assert_eq!(Detection::default(), Detection::NONE);
         let other = Detection::new(Scores::from_array([255, 0, 0, 0, 0, 0, 0, 0]), &thresholds);
