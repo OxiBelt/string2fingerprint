@@ -159,6 +159,16 @@ impl QuantizedWeights {
         }
     }
 
+    /// Returns `network` with the rounded weights of the last
+    /// [`update`](Self::update) in place of its own.
+    pub(super) fn apply(&self, network: &Network) -> Network {
+        Network {
+            dims: network.dims.clone(),
+            weights: self.weights.clone(),
+            biases: network.biases.clone(),
+        }
+    }
+
     fn as_slices(&self) -> Vec<&[f32]> {
         self.weights.iter().map(Vec::as_slice).collect()
     }

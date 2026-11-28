@@ -263,7 +263,9 @@ impl TrainReport {
 
     /// Returns the mean and the largest difference between a score of the
     /// quantized model and the score that the float network gives, over the
-    /// first windows of the dataset, at most 4096.
+    /// first windows of the dataset, at most 4096. After
+    /// [quantized epochs](TrainConfig::quantized_epochs), the float network
+    /// has the rounded weights that the last epoch evaluated.
     ///
     /// A mean of about one score step is usual. A much larger value says
     /// that the model lost accuracy when it was quantized, which more
@@ -551,7 +553,17 @@ impl Trainer {
 
         let layers = quantize(&network).ok_or(TrainError::Diverged)?;
         let model = Model::from_layers(layers)?;
-        let drift = quantization_drift(&network, &model, data);
+        // A quantized epoch computes the loss with the rounded weights only.
+        // Its steps also move the float weights within their levels, which
+        // no loss sees, so the drift compares the model with the network
+        // that the last epoch evaluated.
+        let evaluated = if config.quantized_epochs > 0 {
+            quantized_weights.update(&network);
+            quantized_weights.apply(&network)
+        } else {
+            network
+        };
+        let drift = quantization_drift(&evaluated, &model, data);
         Ok(Trained {
             model,
             report: TrainReport {
@@ -1070,6 +1082,23 @@ mod tests {
             trainer.fine_tune(&base, &Dataset::new()).err(),
             Some(TrainError::EmptyDataset)
         );
+    }
+
+    #[test]
+    fn fine_tuning_reports_the_drift_of_the_evaluated_weights() {
+        // Steps from a base on the grid move float weights within their
+        // levels, together, which the model does not see.
+        let config = TrainConfig {
+            batch_size: 16,
+            threads: 1,
+            ..TrainConfig::fine_tuning()
+        };
+        let tuned = Trainer::new(config)
+            .unwrap()
+            .fine_tune(&Model::embedded(), &dataset(60))
+            .unwrap();
+        let (mean, largest) = tuned.report().quantization_drift();
+        assert!(mean < 1.0 && largest < 8.0, "drift {mean}, {largest}");
     }
 
     #[test]
