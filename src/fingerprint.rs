@@ -55,6 +55,28 @@ pub const SHAPE_CLASS_COUNT: usize = SHAPE_CLASSES as usize;
 /// the feature of this count. See [`feature_value`].
 pub const MAX_COUNT: usize = COUNT_CAP as usize;
 
+/// The version of the fingerprint layout that this crate extracts.
+///
+/// The layout is everything that decides the features of a window: the
+/// symbol tables, the sections and their n-grams, the hashes, the blocks and
+/// windows, and the count table. A model records the layout version it was
+/// trained on, and loads only where the layout is compatible. The version
+/// follows Semantic Versioning:
+///
+/// - The major number changes when any input can get a different
+///   fingerprint. Models of another major number are refused, because every
+///   model must be retrained.
+/// - The minor number changes when features are added that every earlier
+///   model can ignore, because they were zero in every fingerprint that the
+///   earlier layout extracted.
+/// - The patch number changes when the layout is documented or implemented
+///   differently but no fingerprint changes.
+///
+/// A model of layout `m` loads where this version matches the requirement
+/// `^m`, as [`VersionReq::caret`](crate::version::VersionReq::caret) defines
+/// it, so a model never loads with a layout older than its own.
+pub const LAYOUT_VERSION: crate::version::Version = crate::version::Version::new(1, 0, 0);
+
 /// First bucket and bucket count of lexical bigrams with a non-alphanumeric
 /// symbol.
 const LEX2: (usize, u32) = (0, 384);

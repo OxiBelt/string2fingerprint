@@ -89,6 +89,7 @@ mod testutil;
 mod thresholds;
 #[cfg(feature = "train")]
 pub mod train;
+pub mod version;
 
 pub use backend::{Backend, UnsupportedBackend};
 pub use category::Category;
@@ -98,6 +99,15 @@ pub use scorer::{Scorer, ScorerBuilder, ScorerError, WindowScores, Windows};
 pub use scores::Scores;
 pub use stream::ScoreStream;
 pub use thresholds::{Threshold, Thresholds};
+
+/// The version of this crate, from `Cargo.toml`.
+///
+/// A model file states the versions of the crate that may load it as a
+/// [`VersionReq`](version::VersionReq), which this version must match.
+pub const VERSION: version::Version = match version::Version::parse(env!("CARGO_PKG_VERSION")) {
+    Ok(version) => version,
+    Err(_) => panic!("the crate version is a semantic version"),
+};
 
 /// Loads the model `name` that the build script of the calling crate wrote
 /// to `OUT_DIR`, and returns the result of
