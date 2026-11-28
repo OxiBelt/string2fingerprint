@@ -197,14 +197,15 @@ to the bytes that raised it. These parts are the layout, and a change to any
 of them needs every model to be retrained.
 
 The layout has a [version](#versions). Its major number changes when any input
-can get a different fingerprint. Its minor number changes when features are
-added that were zero in every fingerprint of the earlier layout, so that
-earlier models ignore them. Its patch number changes when no fingerprint
-changes. A model of layout `m` is compatible with the layout of the crate when
-that layout matches the requirement `^m`: the same major number, or the same
-leftmost nonzero number below 1.0.0, and not lower than `m`. The current
-layout is 1.0.0, which is also the layout of every earlier revision of the
-crate.
+can get a different fingerprint, including a change of the fingerprint length.
+Its minor number changes when the layout gains a part that callers can use and
+no fingerprint changes, and its patch number when it is documented or
+implemented differently and no fingerprint changes. A model of layout `m` is
+compatible with the layout of the crate when `m` has the same major number and
+no pre-release, since minor and patch changes keep every fingerprint. The
+layout version of the crate is 1.0.0 or above and has no pre-release. The
+current layout is 1.0.0, which is also the layout of every earlier revision of
+the crate.
 
 ### Network
 
@@ -250,11 +251,19 @@ requirement on the versions of the crate that may load it. A model loads only
 when its layout is compatible with the layout of the crate and the version of
 the crate matches its requirement, so that a model is never used with a
 fingerprint or a network that it was not trained for. The two checks come
-after the checksum and before the layers, and the layout is checked first. The
-metadata of any model can be read without the checks, so that a caller can
-report why a model does not load. A model that the crate trains or creates
-from layers has the current layout and requires `^` the version of the crate,
-and its requirement can be replaced by any that the crate matches.
+after the checksum and before the input and output dimensions are compared
+with the fingerprint length and the number of categories, and the layout is
+checked first. The metadata of any model can be read without the checks, so
+that a caller can report why a model does not load, even a model of another
+fingerprint length. A model that the crate trains or creates from layers has
+the current layout and requires `^` the version of the crate, and its
+requirement can be replaced by any that the crate matches.
+
+Under the rules of Cargo, a requirement on a pre-release of the crate, such as
+`^0.1.0-dev`, matches neither `0.1.1-dev` nor `0.2.0`. When the version of the
+crate changes, a model that the new version still runs, such as an embedded
+model, is loaded with a new requirement that the caller states, and written
+again.
 
 Format version 2 is the current format. Format version 1 had no metadata, and
 every revision that wrote it extracted layout 1.0.0 and had the version
@@ -392,7 +401,7 @@ comparisons, rounding to an integer, and conversions between integers and
 floats. Its exponential, logarithm, and cosine are its own, built from
 them. A batch is divided into a fixed number of parts whose
 gradients are added in a fixed order, whatever thread computed them. A test
-holds the checksum of a model that a fixed run must produce.
+holds the checksum of the layers of a model that a fixed run must produce.
 
 ## Versions
 
@@ -400,9 +409,12 @@ A version has the form of
 [Semantic Versioning 2.0.0](https://semver.org/spec/v2.0.0.html): three
 numbers without leading zeros, an optional pre-release, and optional build
 metadata, at most 64 bytes in all. Versions are ordered by the precedence of
-that specification, which ignores build metadata.
+that specification, and build metadata, which precedence ignores, only breaks
+ties.
 
-A version requirement has the syntax and the matching rules of Cargo. It is
+A version requirement has the matching rules of Cargo and a subset of its
+syntax, without the spellings that Cargo rewrites into others: `x` for `*`, an
+operator before a wildcard, `1.*.*`, and build metadata. It is
 `*` or a list of comparators separated by commas. A comparator is an operator
 (`=`, `>`, `>=`, `<`, `<=`, `~`, or `^`) followed by a version whose minor and
 patch numbers may be left out, a version without an operator, which means
@@ -412,7 +424,9 @@ comparator. A version with a pre-release also needs a comparator with the same
 major, minor, and patch numbers and a pre-release, so that a pre-release
 matches only a requirement that names its release. The canonical text of a
 requirement writes operators without spaces, writes `^` out, and separates
-comparators with a comma and a space. It is at most 255 bytes long.
+comparators with a comma and a space. A requirement has at most 32
+comparators, the limit of Cargo, and its canonical text is at most 255 bytes
+long. Only spaces may separate the tokens of a requirement.
 
 ## Backends
 
