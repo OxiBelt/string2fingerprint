@@ -30,6 +30,7 @@ pub mod kernel;
 pub mod model;
 mod scorer;
 mod scores;
+mod stream;
 #[cfg(test)]
 mod testutil;
 mod thresholds;
@@ -39,8 +40,9 @@ pub mod train;
 pub use backend::{Backend, UnsupportedBackend};
 pub use category::Category;
 pub use category_set::{CategorySet, ParseCategorySetError};
-pub use scorer::{Scorer, ScorerBuilder, ScorerError};
+pub use scorer::{Scorer, ScorerBuilder, ScorerError, WindowScores, Windows};
 pub use scores::Scores;
+pub use stream::ScoreStream;
 pub use thresholds::{Threshold, Thresholds};
 
 /// Loads the model `name` that the build script of the calling crate wrote
