@@ -3,7 +3,8 @@
 use string2fingerprint::build::{ModelBuild, Source};
 use string2fingerprint::eval::Objective;
 use string2fingerprint::train::TrainConfig;
-use string2fingerprint::{Threshold, Thresholds};
+use string2fingerprint::version::VersionReq;
+use string2fingerprint::{Threshold, Thresholds, VERSION};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // A small network that a few dozen steps fit to the development set.
@@ -27,6 +28,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             },
             Thresholds::uniform(Threshold::at(128)),
         )
+        // The model states the versions of the library that may load it.
+        .library_requirement(format!(">={VERSION}").parse::<VersionReq>()?)
         .run()?;
 
     // A build script can fail the build when the model is not good enough.

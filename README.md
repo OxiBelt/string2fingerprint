@@ -166,6 +166,57 @@ measured on real traffic. The [training tools](tools/train/README.md)
 document the data, the measured results of each model, and the limits. Load
 another model with `Model::from_bytes` and `Scorer::with_model`.
 
+### Model Versions
+
+A model file records the version of the fingerprint layout it was trained on
+and the versions of this crate that may load it, both in
+[Semantic Versioning](https://semver.org/spec/v2.0.0.html). The requirement
+has the syntax and the rules of Cargo, such as `^0.1.0-dev` or
+`>=0.3, <0.5`. `Model::from_bytes`, and every builder that takes model bytes,
+refuses a model whose layout is not compatible with
+`fingerprint::LAYOUT_VERSION` (`ModelError::IncompatibleLayout`) or whose
+requirement `string2fingerprint::VERSION` does not match
+(`ModelError::UnsupportedLibrary`), so a model never runs on fingerprints it
+was not trained for. `Metadata::read` reads both versions without the checks:
+
+```rust
+use string2fingerprint::model::{Metadata, Model, ModelError};
+
+let bytes = std::fs::read("route.s2fp")?;
+match Model::from_bytes(&bytes) {
+    Ok(model) => println!("layout {}", model.layout_version()),
+    Err(ModelError::IncompatibleLayout | ModelError::UnsupportedLibrary) => {
+        let metadata = Metadata::read(&bytes)?;
+        eprintln!(
+            "route.s2fp needs layout ^{} and library {}",
+            metadata.layout_version(),
+            metadata.library_requirement()
+        );
+    }
+    Err(error) => return Err(error.into()),
+}
+```
+
+A model that the crate trains requires `^` the version that trained it, and
+`Model::with_library_requirement` states another range. The `model_info`
+example prints the versions of model files and whether this crate loads them:
+
+```sh
+cargo run --release --example model_info -- route.s2fp default
+```
+
+A layout is compatible when its major number equals that of
+`fingerprint::LAYOUT_VERSION` and it has no pre-release, since any change to
+the fingerprint raises the major number. As in Cargo, a pre-release crate
+version such as `0.2.0-rc.1` matches only a requirement that names a
+pre-release of the same `0.2.0`, so a model saved for `^0.1.0` does not load
+there. `Model::from_bytes_with_library_requirement`, or `model_info
+--library-requirement REQ --out FILE MODEL`, states a new range for a model
+whose layers still fit.
+
+Files of format version 1, written before the versions were recorded, load
+as layout 1.0.0 with the requirement `^0.1.0-dev`.
+
 To score or decide lines of standard input from the command line, or to
 measure throughput for each backend that the CPU supports:
 
@@ -187,6 +238,7 @@ build their own decision, or run the kernel elsewhere:
 | Fingerprints | `fingerprint::Fingerprint`, `fingerprints`, `Fingerprinter`, `window_range` |
 | Kernel and backends | `Backend`, `kernel::Kernel`, `kernel::Weights` |
 | Network | `model::Model`, `LayerView`, `Logits`, `Trace` |
+| Model versions | `model::Metadata`, `fingerprint::LAYOUT_VERSION`, `VERSION`, `version::Version`, `VersionReq` |
 
 ```rust
 use string2fingerprint::fingerprint::fingerprints;
@@ -247,6 +299,9 @@ A sample is the bytes of one input and the categories that apply to it, and
 benign text has none. Training is deterministic: the same samples and
 settings give the same model bytes on every supported host and with any
 number of threads. `Model::from_bytes` loads the file again.
+`--library-requirement REQ` states the versions of the crate that may load
+the model, and `ModelBuild::library_requirement` does the same in a build
+script.
 
 `TrainConfig::costs` weighs the two kinds of error. A higher cost of false
 positives, or a higher weight of benign text, gives a model that flags less
