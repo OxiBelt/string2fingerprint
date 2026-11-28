@@ -140,6 +140,15 @@ let scorer = Scorer::with_model(trained.into_model());
 let evaluation = held_out.evaluate(&scorer);
 ```
 
+The `train` example does the same from the command line, with every setting
+as an option and a report of false positives and false negatives on held-out
+samples:
+
+```sh
+cargo run --release --features train --example train -- \
+  --benign benign.txt --labeled attacks.tsv --test-labeled held_out.tsv --out my.s2fp
+```
+
 A sample is the bytes of one input and the categories that apply to it, and
 benign text has none. Training is deterministic: the same samples and
 settings give the same model bytes on every supported host and with any

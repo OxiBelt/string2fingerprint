@@ -221,6 +221,32 @@ the results on the development set.
 `large` separates best on the synthetic split at three times the cost of
 `default`. `tests/model_quality.rs` holds a limit for each model.
 
+## Training With the Library
+
+The `train` feature of the crate trains models without Python or NumPy, with
+the procedure of `train.py`, and the `train` example runs it from the command
+line. It reads the corpus files of `dataset.py` and text files, and it reports
+the AUC, recall, and benign rate of each category on held-out samples:
+
+```sh
+cargo run --release --features train --example train -- \
+  --corpus "$WORK/train.bin" --test-corpus "$WORK/test.bin" --out "$WORK/mine.s2fp"
+```
+
+The documentation at the top of `examples/train.rs` lists every option,
+including the settings of `TrainConfig`, sample weights, and the costs of
+false positives and false negatives in each category. Unlike `train.py`, the
+library gives the same model bytes on every supported host.
+
+With the settings of the `default` model, on 99,990 training samples (seed 1)
+and 19,996 test samples (seed 3), the two trainers give models of the same
+quality:
+
+| Trainer | Mean AUC | Attacks flagged at 128 | Benign flagged at 128 | Time on four cores |
+| --- | --- | --- | --- | --- |
+| `train.py` | 0.9855 | 97.44% | 1.95% | 50 s |
+| `train` example | 0.9850 | 97.26% | 2.09% | 13 s |
+
 ## Correcting a Model
 
 `Trainer::fine_tune` of the `train` feature continues the training of a model
@@ -247,7 +273,14 @@ and the last one is the recall of `command_injection` alone.
 | The lines and 19,998 corpus samples | Preset | 0.6% | 40.3% | 0.93% | 97.89% | 72.8% |
 
 The preset is `TrainConfig::fine_tuning()`. Batches of 32 double the number
-of steps on the same lines. The corpus samples are a split that `dataset.py`
+of steps on the same lines. With the `train` example, the last row is:
+
+```sh
+python3 -B tools/train/dataset.py --seed 2 --count 20000 --out "$WORK/replay.bin"
+cargo run --release --features train --example train -- --base default \
+  --benign flagged.txt --corpus "$WORK/replay.bin" --out "$WORK/tuned.s2fp"
+```
+ The corpus samples are a split that `dataset.py`
 generated with a seed of its own, so the model saw neither them nor the test
 split before.
 
