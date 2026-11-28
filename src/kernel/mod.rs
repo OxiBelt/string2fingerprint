@@ -563,6 +563,7 @@ pub(crate) mod tests {
         let weights = Weights::new(vec![1, 2, 3, 4, 5, 6], 3).unwrap();
         assert_eq!(weights.row(1), Some(&[4, 5, 6][..]));
         assert_eq!(weights.row(2), None);
+        assert_eq!(weights.row(usize::MAX), None);
         let kernel = Kernel::detect();
         let mut out = [7i32; 2];
         assert!(kernel.matvec(&weights, &[1, 2], &mut out).is_err());

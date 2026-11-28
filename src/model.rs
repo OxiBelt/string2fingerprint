@@ -35,12 +35,33 @@
 //!
 //! The checksum detects accidental corruption. It is not an authenticity
 //! check, so load models only from a trusted source.
+//!
+//! # Inference
+//!
+//! [`Model::score`] runs the network on one fingerprint with a
+//! [`Kernel`]. [`Model::logits`] stops before the logistic table and
+//! returns the [`Logits`] of the output layer, and [`Model::trace`] also
+//! keeps the accumulators and activations of every layer.
+//!
+//! ```
+//! use string2fingerprint::fingerprint::fingerprints;
+//! use string2fingerprint::kernel::Kernel;
+//! use string2fingerprint::model::Model;
+//!
+//! let model = Model::embedded();
+//! let window = fingerprints(b"1' OR '1'='1").next().expect("input has a window");
+//! let trace = model.trace(Kernel::detect(), &window);
+//! assert_eq!(trace.logits(), model.logits(Kernel::SCALAR, &window));
+//! assert_eq!(trace.logits().scores(), model.score(Kernel::SCALAR, &window));
+//! assert_eq!(trace.activations(0).map(<[u8]>::len), Some(64));
+//! ```
 
 use core::fmt;
+use core::ops::Index;
 
 use crate::backend::Verified;
 use crate::fingerprint::{FINGERPRINT_LEN, Fingerprint};
-use crate::kernel::{self, Matrix};
+use crate::kernel::{self, Kernel, Matrix};
 use crate::{Category, Scores};
 
 /// The format version that this crate reads.
@@ -78,6 +99,171 @@ const LOGISTIC: [u8; 256] = [
     255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
     255, 255, 255, 255, 255, 255, 255,
 ];
+
+/// Returns the score of an output-layer value, in units of 1/16:
+/// `round(255 / (1 + exp(-value / 16)))`.
+///
+/// The value 0 scores 128, and the table rises from 0 at -128 to 255 at
+/// 127.
+#[must_use]
+pub const fn score_of_logit(value: i8) -> u8 {
+    LOGISTIC[(value as i16 + 128) as usize]
+}
+
+/// The output-layer values of one fingerprint, one for each [`Category`],
+/// before the logistic table turns them into [`Scores`].
+///
+/// A value is the logit of the category in units of 1/16, clamped to the
+/// range from -128 to 127, so 0 is the boundary at which a score is 128.
+/// Logits keep the order of scores and resolve differences that the table
+/// rounds away near 0 and 255.
+///
+/// There is no `Default`: the logits of an input without a window are
+/// [`Logits::NONE`], which scores 0, while logits of 0 score 128.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Logits([i8; Category::COUNT]);
+
+impl Logits {
+    /// The lowest logit in every category, which scores 0. It is the logits
+    /// of an input without a window, and the start of a fold with
+    /// [`Logits::max_with`].
+    pub const NONE: Self = Self([i8::MIN; Category::COUNT]);
+
+    /// Creates logits from an array indexed by [`Category::index`].
+    #[must_use]
+    pub const fn from_array(values: [i8; Category::COUNT]) -> Self {
+        Self(values)
+    }
+
+    /// Returns the logits as an array indexed by [`Category::index`].
+    #[must_use]
+    pub const fn as_array(&self) -> &[i8; Category::COUNT] {
+        &self.0
+    }
+
+    /// Returns the logit of `category`.
+    #[must_use]
+    pub const fn get(&self, category: Category) -> i8 {
+        self.0[category.index()]
+    }
+
+    /// Returns the logit of `category` as a float: the stored value divided
+    /// by 16.
+    #[must_use]
+    pub fn value(&self, category: Category) -> f32 {
+        f32::from(self.get(category)) / 16.0
+    }
+
+    /// Returns the scores of the logits through [`score_of_logit`].
+    #[must_use]
+    pub const fn scores(&self) -> Scores {
+        let mut scores = [0u8; Category::COUNT];
+        let mut index = 0;
+        while index < Category::COUNT {
+            scores[index] = score_of_logit(self.0[index]);
+            index += 1;
+        }
+        Scores::from_array(scores)
+    }
+
+    /// Iterates over every category and its logit, ordered by discriminant.
+    pub fn iter(&self) -> impl Iterator<Item = (Category, i8)> + '_ {
+        Category::ALL.into_iter().zip(self.0)
+    }
+
+    /// Keeps, for each category, the higher of the two logits.
+    #[must_use]
+    pub fn max_with(mut self, other: Self) -> Self {
+        for (value, other_value) in self.0.iter_mut().zip(other.0) {
+            *value = (*value).max(other_value);
+        }
+        self
+    }
+}
+
+impl Index<Category> for Logits {
+    type Output = i8;
+
+    fn index(&self, category: Category) -> &i8 {
+        &self.0[category.index()]
+    }
+}
+
+impl From<Logits> for Scores {
+    fn from(logits: Logits) -> Self {
+        logits.scores()
+    }
+}
+
+/// The values of every layer of a model for one fingerprint, which
+/// [`Model::trace`] records.
+///
+/// For each layer it keeps the accumulators, which are the biases plus the
+/// dot products of the inputs with the weights, before the multiplier and
+/// the shift. For each hidden layer it also keeps the activations that the
+/// next layer reads. It holds about 5 KiB and no heap memory.
+#[derive(Clone, PartialEq, Eq)]
+pub struct Trace {
+    layers: usize,
+    sizes: [usize; MAX_LAYERS],
+    accumulators: [[i32; MAX_HIDDEN]; MAX_LAYERS],
+    activations: [[u8; MAX_HIDDEN]; MAX_LAYERS - 1],
+    logits: Logits,
+}
+
+impl fmt::Debug for Trace {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Trace")
+            .field("layer_sizes", &&self.sizes[..self.layers])
+            .field("logits", &self.logits)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Trace {
+    const EMPTY: Self = Self {
+        layers: 0,
+        sizes: [0; MAX_LAYERS],
+        accumulators: [[0; MAX_HIDDEN]; MAX_LAYERS],
+        activations: [[0; MAX_HIDDEN]; MAX_LAYERS - 1],
+        logits: Logits([0; Category::COUNT]),
+    };
+
+    /// Returns the number of layers, including the output layer.
+    #[must_use]
+    pub const fn layer_count(&self) -> usize {
+        self.layers
+    }
+
+    /// Returns the accumulator of each output of layer `layer`, or `None`
+    /// when the model has no such layer.
+    ///
+    /// Validation bounds every accumulator by `i32::MAX` in magnitude.
+    #[must_use]
+    pub fn accumulators(&self, layer: usize) -> Option<&[i32]> {
+        (layer < self.layers).then(|| &self.accumulators[layer][..self.sizes[layer]])
+    }
+
+    /// Returns the activations of hidden layer `layer`, or `None` for the
+    /// output layer and beyond.
+    #[must_use]
+    pub fn activations(&self, layer: usize) -> Option<&[u8]> {
+        (layer < self.layers.saturating_sub(1))
+            .then(|| &self.activations[layer][..self.sizes[layer]])
+    }
+
+    /// Returns the logits of the output layer.
+    #[must_use]
+    pub const fn logits(&self) -> Logits {
+        self.logits
+    }
+
+    /// Returns the scores of the output layer.
+    #[must_use]
+    pub const fn scores(&self) -> Scores {
+        self.logits.scores()
+    }
+}
 
 /// The reason a byte string is not a valid model.
 ///
@@ -141,6 +327,71 @@ pub struct LayerParameters {
     /// The weights in row-major order: all inputs of the first output, then
     /// of the second, and so on. No weight is -128.
     pub weights: Vec<i8>,
+}
+
+/// A borrowed view of the parameters of one layer of a [`Model`].
+///
+/// [`Model::layer`] returns it without copying, where [`Model::layers`]
+/// copies the parameters into [`LayerParameters`].
+#[derive(Clone, Copy, Debug)]
+pub struct LayerView<'a> {
+    layer: &'a Layer,
+}
+
+impl<'a> LayerView<'a> {
+    /// Returns the number of inputs.
+    #[must_use]
+    pub fn inputs(&self) -> usize {
+        self.layer.matrix.cols()
+    }
+
+    /// Returns the number of outputs.
+    #[must_use]
+    pub fn outputs(&self) -> usize {
+        self.layer.matrix.rows()
+    }
+
+    /// Returns the right shift that follows the multiplication.
+    #[must_use]
+    pub fn shift(&self) -> u8 {
+        self.layer.shift
+    }
+
+    /// Returns the bias of each output.
+    #[must_use]
+    pub fn biases(&self) -> &'a [i32] {
+        &self.layer.bias
+    }
+
+    /// Returns the multiplier of each output.
+    #[must_use]
+    pub fn multipliers(&self) -> &'a [i32] {
+        &self.layer.multiplier
+    }
+
+    /// Returns the weights in row-major order.
+    #[must_use]
+    pub fn weights(&self) -> &'a [i8] {
+        self.layer.matrix.weights()
+    }
+
+    /// Returns the weights of output `row`, one for each input, or `None`
+    /// when there is no such output.
+    #[must_use]
+    pub fn row(&self, row: usize) -> Option<&'a [i8]> {
+        self.weights().chunks_exact(self.inputs()).nth(row)
+    }
+
+    /// Returns a copy of the parameters.
+    #[must_use]
+    pub fn to_parameters(&self) -> LayerParameters {
+        LayerParameters {
+            shift: self.layer.shift,
+            biases: self.layer.bias.to_vec(),
+            multipliers: self.layer.multiplier.to_vec(),
+            weights: self.layer.matrix.weights().to_vec(),
+        }
+    }
 }
 
 /// One fully connected layer.
@@ -481,12 +732,61 @@ impl Model {
     ///
     /// [`Model::from_layers`] creates an equal model from them.
     pub fn layers(&self) -> impl ExactSizeIterator<Item = LayerParameters> + '_ {
-        self.layers.iter().map(|layer| LayerParameters {
-            shift: layer.shift,
-            biases: layer.bias.to_vec(),
-            multipliers: layer.multiplier.to_vec(),
-            weights: layer.matrix.weights().to_vec(),
-        })
+        self.layer_views().map(|view| view.to_parameters())
+    }
+
+    /// Returns a view of layer `index`, counted from the first hidden layer,
+    /// or `None` when there is no such layer.
+    #[must_use]
+    pub fn layer(&self, index: usize) -> Option<LayerView<'_>> {
+        self.layers.get(index).map(|layer| LayerView { layer })
+    }
+
+    /// Iterates over a view of every layer, from the first hidden layer to
+    /// the output layer.
+    pub fn layer_views(&self) -> impl ExactSizeIterator<Item = LayerView<'_>> + '_ {
+        self.layers.iter().map(|layer| LayerView { layer })
+    }
+
+    /// Returns the number of layers, including the output layer.
+    #[must_use]
+    pub fn layer_count(&self) -> usize {
+        self.layers.len()
+    }
+
+    /// Returns the number of weights, biases, and multipliers of every
+    /// layer.
+    #[must_use]
+    pub fn parameter_count(&self) -> usize {
+        self.layers
+            .iter()
+            .map(|layer| layer.matrix.rows() * (layer.matrix.cols() + 2))
+            .sum()
+    }
+
+    /// Returns the length of [`Model::to_bytes`] without encoding the
+    /// model.
+    #[must_use]
+    pub fn encoded_len(&self) -> usize {
+        let body: usize = self
+            .layers
+            .iter()
+            .map(|layer| 4 + layer.matrix.rows() * (8 + layer.matrix.cols()))
+            .sum();
+        MAGIC.len() + 4 + 2 * (self.layers.len() + 1) + body + 4
+    }
+
+    /// Returns the checksum that ends [`Model::to_bytes`], without
+    /// allocating.
+    ///
+    /// Equal models have equal checksums, so the checksum can name the
+    /// model in logs. It is not an authenticity check, and different models
+    /// can share it.
+    #[must_use]
+    pub fn checksum(&self) -> u32 {
+        let mut hash = FNV_OFFSET;
+        self.encode_content(|bytes| hash = fnv1a(hash, bytes));
+        hash
     }
 
     /// Returns the model in the [format](self) that [`Model::from_bytes`]
@@ -496,39 +796,38 @@ impl Model {
     /// model equal the bytes it was parsed from.
     #[must_use]
     pub fn to_bytes(&self) -> Vec<u8> {
-        let body: usize = self
-            .layers
-            .iter()
-            .map(|layer| 4 + layer.matrix.rows() * (8 + layer.matrix.cols()))
-            .sum();
-        let mut bytes =
-            Vec::with_capacity(MAGIC.len() + 4 + 2 * (self.layers.len() + 1) + body + 4);
-        bytes.extend(MAGIC);
-        bytes.extend(FORMAT_VERSION.to_le_bytes());
-        // Validation bounds the layer count by `MAX_LAYERS` and every
-        // dimension by `FINGERPRINT_LEN`, so both conversions are exact.
-        bytes.push(self.layers.len() as u8);
-        bytes.push(0);
-        bytes.extend((FINGERPRINT_LEN as u16).to_le_bytes());
-        for layer in &self.layers {
-            bytes.extend((layer.matrix.rows() as u16).to_le_bytes());
-        }
-        for layer in &self.layers {
-            bytes.extend([layer.shift, 0, 0, 0]);
-            for value in layer.bias.iter().chain(&layer.multiplier) {
-                bytes.extend(value.to_le_bytes());
-            }
-            bytes.extend(
-                layer
-                    .matrix
-                    .weights()
-                    .iter()
-                    .map(|weight| weight.to_le_bytes()[0]),
-            );
-        }
+        let mut bytes = Vec::with_capacity(self.encoded_len());
+        self.encode_content(|part| bytes.extend_from_slice(part));
         let sum = checksum(&bytes);
         bytes.extend(sum.to_le_bytes());
         bytes
+    }
+
+    /// Passes the encoding of the model up to its checksum to `sink`, in
+    /// order.
+    fn encode_content(&self, mut sink: impl FnMut(&[u8])) {
+        sink(&MAGIC);
+        sink(&FORMAT_VERSION.to_le_bytes());
+        // Validation bounds the layer count by `MAX_LAYERS` and every
+        // dimension by `FINGERPRINT_LEN`, so both conversions are exact.
+        sink(&[self.layers.len() as u8, 0]);
+        sink(&(FINGERPRINT_LEN as u16).to_le_bytes());
+        for layer in &self.layers {
+            sink(&(layer.matrix.rows() as u16).to_le_bytes());
+        }
+        for layer in &self.layers {
+            sink(&[layer.shift, 0, 0, 0]);
+            for value in layer.bias.iter().chain(&layer.multiplier) {
+                sink(&value.to_le_bytes());
+            }
+            let mut buffer = [0u8; 1024];
+            for chunk in layer.matrix.weights().chunks(buffer.len()) {
+                for (byte, &weight) in buffer.iter_mut().zip(chunk) {
+                    *byte = weight.cast_unsigned();
+                }
+                sink(&buffer[..chunk.len()]);
+            }
+        }
     }
 
     /// Returns the number of outputs of each layer, from the first hidden
@@ -537,8 +836,67 @@ impl Model {
         self.layers.iter().map(|layer| layer.matrix.rows())
     }
 
+    /// Returns the scores of one fingerprint, computed with `kernel`.
+    ///
+    /// Scores do not depend on the kernel. The call never fails, allocates
+    /// nothing, and takes time linear in [`Model::parameter_count`].
+    #[must_use]
+    pub fn score(&self, kernel: Kernel, fingerprint: &Fingerprint) -> Scores {
+        self.infer(kernel.verified(), fingerprint)
+    }
+
+    /// Returns the logits of one fingerprint, computed with `kernel`, which
+    /// [`Logits::scores`] turns into the scores of [`Model::score`].
+    #[must_use]
+    pub fn logits(&self, kernel: Kernel, fingerprint: &Fingerprint) -> Logits {
+        self.forward(kernel.verified(), fingerprint, |_, _, _| {})
+    }
+
+    /// Returns the values of every layer for one fingerprint, computed with
+    /// `kernel`.
+    #[must_use]
+    pub fn trace(&self, kernel: Kernel, fingerprint: &Fingerprint) -> Trace {
+        let mut trace = Trace::EMPTY;
+        trace.layers = self.layers.len();
+        trace.logits = self.forward(
+            kernel.verified(),
+            fingerprint,
+            |index, accumulators, activations| {
+                let layer = &self.layers[index];
+                trace.sizes[index] = accumulators.len();
+                for ((stored, &acc), &bias) in trace.accumulators[index]
+                    .iter_mut()
+                    .zip(accumulators)
+                    .zip(layer.bias.iter())
+                {
+                    // Validation bounds the sum by `i32::MAX` in magnitude.
+                    *stored = acc.wrapping_add(bias);
+                }
+                if let Some(stored) = trace.activations.get_mut(index) {
+                    stored[..activations.len()].copy_from_slice(activations);
+                }
+            },
+        );
+        trace
+    }
+
     /// Runs the network on one fingerprint.
     pub(crate) fn infer(&self, backend: Verified, fingerprint: &Fingerprint) -> Scores {
+        self.forward(backend, fingerprint, |_, _, _| {}).scores()
+    }
+
+    /// Runs the network on one fingerprint and returns the logits.
+    ///
+    /// After each layer it passes the index of the layer, the dot products
+    /// of its outputs, and the activations of a hidden layer, which are
+    /// empty for the output layer, to `observe`.
+    #[inline(always)]
+    fn forward(
+        &self,
+        backend: Verified,
+        fingerprint: &Fingerprint,
+        mut observe: impl FnMut(usize, &[i32], &[u8]),
+    ) -> Logits {
         let mut acc = [0i32; MAX_HIDDEN];
         let mut front = [0u8; MAX_HIDDEN];
         let mut back = [0u8; MAX_HIDDEN];
@@ -546,9 +904,9 @@ impl Model {
         let mut input: &[u8] = fingerprint.as_array();
 
         let Some((output, hidden)) = self.layers.split_last() else {
-            return Scores::ZERO;
+            return Logits::NONE;
         };
-        for layer in hidden {
+        for (index, layer) in hidden.iter().enumerate() {
             let rows = layer.matrix.rows();
             let acc = &mut acc[..rows];
             kernel::matvec(backend, &layer.matrix, input, acc);
@@ -556,26 +914,35 @@ impl Model {
                 // The clamp is also the rectifier.
                 *activation = layer.requantize(row, acc).clamp(0, 255) as u8;
             }
+            observe(index, acc, &target[..rows]);
             core::mem::swap(&mut source, &mut target);
             input = &source[..rows];
         }
 
-        let mut scores = [0u8; Category::COUNT];
+        let mut logits = [0i8; Category::COUNT];
         let acc = &mut acc[..Category::COUNT];
         kernel::matvec(backend, &output.matrix, input, acc);
-        for (row, (score, &acc)) in scores.iter_mut().zip(acc.iter()).enumerate() {
-            let value = output.requantize(row, acc).clamp(-128, 127);
-            *score = LOGISTIC[(value + 128) as usize];
+        for (row, (logit, &acc)) in logits.iter_mut().zip(acc.iter()).enumerate() {
+            *logit = output.requantize(row, acc).clamp(-128, 127) as i8;
         }
-        Scores::from_array(scores)
+        observe(hidden.len(), acc, &[]);
+        Logits(logits)
     }
+}
+
+/// The offset basis of FNV-1a 32.
+const FNV_OFFSET: u32 = 0x811C_9DC5;
+
+/// Continues the FNV-1a 32 hash `hash` over `bytes`.
+fn fnv1a(hash: u32, bytes: &[u8]) -> u32 {
+    bytes.iter().fold(hash, |hash, &byte| {
+        (hash ^ u32::from(byte)).wrapping_mul(0x0100_0193)
+    })
 }
 
 /// Returns the FNV-1a 32 hash of `bytes`.
 fn checksum(bytes: &[u8]) -> u32 {
-    bytes.iter().fold(0x811C_9DC5, |hash, &byte| {
-        (hash ^ u32::from(byte)).wrapping_mul(0x0100_0193)
-    })
+    fnv1a(FNV_OFFSET, bytes)
 }
 
 /// A bounds-checked cursor over model bytes.
@@ -628,6 +995,7 @@ impl<'a> Reader<'a> {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use crate::Backend;
     use crate::testutil::Rng;
 
     /// The parameters of one layer in the order of the format.
@@ -742,6 +1110,163 @@ pub(crate) mod tests {
         }
         assert_eq!((LOGISTIC[0], LOGISTIC[128], LOGISTIC[255]), (0, 128, 255));
         assert!(LOGISTIC.windows(2).all(|pair| pair[0] <= pair[1]));
+    }
+
+    #[test]
+    fn score_of_logit_reads_the_logistic_table() {
+        for value in i8::MIN..=i8::MAX {
+            assert_eq!(
+                score_of_logit(value),
+                LOGISTIC[(i16::from(value) + 128) as usize]
+            );
+        }
+        assert_eq!(
+            (score_of_logit(-128), score_of_logit(0), score_of_logit(127)),
+            (0, 128, 255)
+        );
+        let logits = Logits::from_array([-128, -1, 0, 1, 16, 127, -16, 5]);
+        assert_eq!(logits.get(Category::SqlInjection), 0);
+        assert_eq!(logits[Category::Obfuscation], -1);
+        assert_eq!(logits.value(Category::MarkupInjection), 1.0 / 16.0);
+        assert_eq!(logits.value(Category::PathTraversal), 1.0);
+        assert_eq!(logits.iter().count(), Category::COUNT);
+        let scores = Scores::from(logits);
+        for (category, logit) in logits.iter() {
+            assert_eq!(scores.get(category), score_of_logit(logit));
+        }
+        let other = Logits::from_array([0; Category::COUNT]);
+        assert_eq!(
+            logits.max_with(other).as_array(),
+            &[0, 0, 0, 1, 16, 127, 0, 5]
+        );
+    }
+
+    /// Recomputes every layer from the parameters with plain integers.
+    fn reference_trace(
+        model: &Model,
+        fingerprint: &Fingerprint,
+    ) -> (Vec<Vec<i64>>, Vec<Vec<u8>>, Vec<i8>) {
+        let mut input: Vec<u8> = fingerprint.as_array().to_vec();
+        let (mut sums, mut activations, mut logits) = (Vec::new(), Vec::new(), Vec::new());
+        let count = model.layer_count();
+        for (index, layer) in model.layer_views().enumerate() {
+            let mut layer_sums = Vec::new();
+            let mut outputs = Vec::new();
+            for row in 0..layer.outputs() {
+                let dot: i64 = layer
+                    .row(row)
+                    .unwrap()
+                    .iter()
+                    .zip(&input)
+                    .map(|(&weight, &x)| i64::from(weight) * i64::from(x))
+                    .sum();
+                let sum = dot + i64::from(layer.biases()[row]);
+                layer_sums.push(sum);
+                let shift = layer.shift();
+                let value =
+                    (sum * i64::from(layer.multipliers()[row]) + (1 << (shift - 1))) >> shift;
+                outputs.push(value);
+            }
+            sums.push(layer_sums);
+            if index + 1 == count {
+                logits = outputs
+                    .iter()
+                    .map(|&value| value.clamp(-128, 127) as i8)
+                    .collect();
+            } else {
+                input = outputs
+                    .iter()
+                    .map(|&value| value.clamp(0, 255) as u8)
+                    .collect();
+                activations.push(input.clone());
+            }
+        }
+        (sums, activations, logits)
+    }
+
+    #[test]
+    fn traces_record_every_layer() {
+        let mut rng = Rng::new(41);
+        for hidden in [&[][..], &[16], &[48, 24], &[7, 5, 3]] {
+            let model = random_model(&mut rng, hidden);
+            for _ in 0..4 {
+                let fingerprint = random_fingerprint(&mut rng);
+                let (sums, activations, logits) = reference_trace(&model, &fingerprint);
+                for backend in Backend::supported() {
+                    let kernel = Kernel::new(backend).unwrap();
+                    let trace = model.trace(kernel, &fingerprint);
+                    assert_eq!(trace.layer_count(), hidden.len() + 1);
+                    for (layer, expected) in sums.iter().enumerate() {
+                        let actual = trace.accumulators(layer).unwrap();
+                        assert!(
+                            actual
+                                .iter()
+                                .map(|&sum| i64::from(sum))
+                                .eq(expected.iter().copied())
+                        );
+                    }
+                    for (layer, expected) in activations.iter().enumerate() {
+                        assert_eq!(trace.activations(layer), Some(&expected[..]));
+                    }
+                    assert_eq!(trace.activations(hidden.len()), None);
+                    assert_eq!(trace.accumulators(hidden.len() + 1), None);
+                    assert_eq!(trace.logits().as_array()[..], logits[..]);
+                    assert_eq!(model.logits(kernel, &fingerprint), trace.logits());
+                    assert_eq!(model.score(kernel, &fingerprint), trace.scores());
+                    assert_eq!(trace.scores(), model.infer(Verified::SCALAR, &fingerprint));
+                }
+            }
+        }
+        let model = Model::embedded();
+        let trace = model.trace(Kernel::SCALAR, &Fingerprint::ZERO);
+        for index in [3, 4, usize::MAX] {
+            assert_eq!(trace.accumulators(index), None);
+            assert!(model.layer(index).is_none());
+        }
+        for index in [2, 3, usize::MAX] {
+            assert_eq!(trace.activations(index), None);
+        }
+        assert_eq!(model.layer(0).unwrap().row(usize::MAX), None);
+        assert_eq!(Trace::EMPTY.activations(0), None);
+        assert_eq!(Logits::NONE.scores(), Scores::ZERO);
+
+        assert_eq!(
+            format!("{trace:?}"),
+            format!(
+                "Trace {{ layer_sizes: [64, 64, 8], logits: {:?}, .. }}",
+                trace.logits()
+            )
+        );
+    }
+
+    #[test]
+    fn model_information_matches_the_encoding() {
+        let mut rng = Rng::new(43);
+        let mut models: Vec<Model> = [&[][..], &[16], &[48, 24]]
+            .iter()
+            .map(|hidden| random_model(&mut rng, hidden))
+            .collect();
+        models.extend(EmbeddedModel::ALL.map(EmbeddedModel::load));
+        for model in models {
+            let bytes = model.to_bytes();
+            assert_eq!(model.encoded_len(), bytes.len());
+            assert_eq!(model.checksum().to_le_bytes(), bytes[bytes.len() - 4..]);
+            assert_eq!(model.layer_count(), model.layer_sizes().len());
+            let mut parameters = 0;
+            for (index, (view, copy)) in model.layer_views().zip(model.layers()).enumerate() {
+                assert_eq!(view.to_parameters(), copy);
+                assert_eq!(model.layer(index).unwrap().weights(), &copy.weights[..]);
+                assert_eq!(view.outputs(), copy.biases.len());
+                assert_eq!(view.inputs() * view.outputs(), copy.weights.len());
+                assert_eq!(view.multipliers(), &copy.multipliers[..]);
+                assert_eq!(view.shift(), copy.shift);
+                assert_eq!(view.row(0), Some(&copy.weights[..view.inputs()]));
+                assert_eq!(view.row(view.outputs()), None);
+                parameters += copy.weights.len() + 2 * copy.biases.len();
+            }
+            assert!(model.layer(model.layer_count()).is_none());
+            assert_eq!(model.parameter_count(), parameters);
+        }
     }
 
     #[test]

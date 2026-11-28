@@ -196,6 +196,12 @@ parameters:
 - A model is rejected when loaded unless every accumulator provably fits in 32
   bits for every possible input, so inference has no overflow case.
 
+The clamped values of the output layer are the logits of the model, in units
+of 1/16, and the logistic table turns them into scores. A caller can read the
+logits of an input, which are the highest of its windows in each category,
+and the accumulators and activations of every layer for one fingerprint. The
+same code computes them and the scores, so they agree on every backend.
+
 The dot product of unsigned 8-bit activations and signed 8-bit weights is the
 only operation with CPU-specific implementations.
 

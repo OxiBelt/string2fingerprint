@@ -3,7 +3,7 @@
 use crate::backend::{UnsupportedBackend, Verified};
 use crate::fingerprint::{Fingerprint, fingerprints};
 use crate::kernel::{Kernel, selftest};
-use crate::model::{EmbeddedModel, Model};
+use crate::model::{EmbeddedModel, Logits, Model, Trace};
 use crate::{Backend, Scores};
 
 /// Scores untrusted bytes with a [`Model`].
@@ -167,6 +167,36 @@ impl Scorer {
     pub fn score_fingerprint(&self, fingerprint: &Fingerprint) -> Scores {
         self.model.infer(self.backend, fingerprint)
     }
+
+    /// Returns the logits of `input`: in each category, the highest logit
+    /// of any of its windows.
+    ///
+    /// [`Logits::scores`] of the result equals [`Scorer::score`], because
+    /// the logistic table never decreases. Logits resolve differences that
+    /// scores round away near 0 and 255. The call has the contract of
+    /// [`Scorer::score`]. An input without a window has the logit -128 in
+    /// every category, which scores 0.
+    #[must_use]
+    pub fn logits(&self, input: &[u8]) -> Logits {
+        let mut windows = fingerprints(input);
+        let mut logits = Logits::NONE;
+        while let Some(fingerprint) = windows.next_window() {
+            logits = logits.max_with(self.logits_fingerprint(fingerprint));
+        }
+        logits
+    }
+
+    /// Returns the logits of one fingerprint.
+    #[must_use]
+    pub fn logits_fingerprint(&self, fingerprint: &Fingerprint) -> Logits {
+        self.model.logits(self.kernel(), fingerprint)
+    }
+
+    /// Returns the values of every layer of the model for one fingerprint.
+    #[must_use]
+    pub fn trace_fingerprint(&self, fingerprint: &Fingerprint) -> Trace {
+        self.model.trace(self.kernel(), fingerprint)
+    }
 }
 
 #[cfg(test)]
@@ -210,6 +240,24 @@ mod tests {
         assert_eq!(scalar.kernel(), Kernel::SCALAR);
         let input = b"<svg onload=alert(1)>";
         assert_eq!(scalar.score(input), scorer.score(input));
+    }
+
+    #[test]
+    fn logits_order_like_scores() {
+        let scorer = scorer(11);
+        let mut rng = Rng::new(12);
+        for len in [0, 1, 2, 300, 3 * BLOCK_LEN + 9] {
+            let mut input = vec![0u8; len];
+            rng.fill(&mut input);
+            let logits = scorer.logits(&input);
+            assert_eq!(logits.scores(), scorer.score(&input), "length {len}");
+            for fingerprint in fingerprints(&input) {
+                let trace = scorer.trace_fingerprint(&fingerprint);
+                assert_eq!(trace.logits(), scorer.logits_fingerprint(&fingerprint));
+                assert_eq!(trace.scores(), scorer.score_fingerprint(&fingerprint));
+            }
+        }
+        assert_eq!(scorer.logits(b""), Logits::NONE);
     }
 
     #[test]
