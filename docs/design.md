@@ -251,11 +251,11 @@ quantization that follows.
 
 Quantization gives each output of a layer its own weight scale: the largest
 weight magnitude of the output maps to 127. The bias is stored in units of
-1/255 of that scale, which is the unit of the accumulator. The multiplier and the shift of the layer then convert the
-accumulator to a stored activation, or to a logit in units of 1/16 in the
-output layer. The shift is the largest for which no multiplier of the layer
-is above 2^30. The result is validated like any other model
-before it is returned.
+1/255 of that scale, which is the unit of the accumulator. The multiplier and
+the shift of the layer then convert the accumulator to a stored activation,
+or to a logit in units of 1/16 in the output layer. The shift is the largest
+for which no multiplier of the layer is above 2^30. The result is validated
+like any other model before it is returned.
 
 ### Costs
 
