@@ -14,6 +14,20 @@ train = []
 # Training of a model in the build script of a dependent crate, in
 # `string2fingerprint::build`.
 build = ["train"]
+# Asynchronous scoring and detection on Tokio, in
+# `string2fingerprint::tokio`. Work that would hold a runtime worker runs on
+# Tokio's blocking pool, which needs Tokio's `rt` feature; that adds no
+# dependency, and an application that runs a Tokio runtime enables it
+# already.
+tokio = ["dep:tokio", "tokio/rt"]
+
+[dependencies]
+# The runtime is the caller's: the I/O traits need no Tokio feature, and
+# `rt` gives the blocking pool and the cooperative scheduling budget.
+tokio = { version = "1.54.1", default-features = false, optional = true }
+
+[dev-dependencies]
+tokio = { version = "1.54.1", default-features = false, features = ["rt", "rt-multi-thread", "macros", "io-util", "fs"] }
 
 [lints.rust]
 unsafe_code = "deny"
@@ -26,3 +40,7 @@ harness = false
 [[example]]
 name = "train"
 required-features = ["train"]
+
+[[test]]
+name = "tokio"
+required-features = ["tokio"]
