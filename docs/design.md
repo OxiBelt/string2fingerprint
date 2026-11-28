@@ -95,7 +95,7 @@ An evaluation keeps the number of positive and negative samples at each
 score for each category, so that every threshold can be evaluated after the
 samples are recorded. Counts saturate instead of overflowing. The rate of `k`
 of `n` samples is the double-precision quotient of the two counts, which is
-the nearest double-precision value to `k / n` when `n` is below 2^53, and a limit
+the nearest double-precision value to `k / n` when `n` is below 2^53. A limit
 on a rate is met when that value is within the limit, so a limit that equals
 `k / n` in decimal is met by `k` of `n`.
 
@@ -251,11 +251,11 @@ quantization that follows.
 
 Quantization gives each output of a layer its own weight scale: the largest
 weight magnitude of the output maps to 127. The bias is stored in units of
-1/255 of that scale, which is the unit of the accumulator. The multiplier and the shift of the layer then convert the
-accumulator to a stored activation, or to a logit in units of 1/16 in the
-output layer. The shift is the largest for which no multiplier of the layer
-is above 2^30. The result is validated like any other model
-before it is returned.
+1/255 of that scale, which is the unit of the accumulator. The multiplier and
+the shift of the layer then convert the accumulator to a stored activation,
+or to a logit in units of 1/16 in the output layer. The shift is the largest
+for which no multiplier of the layer is above 2^30. The result is validated
+like any other model before it is returned.
 
 ### Costs
 
@@ -295,8 +295,8 @@ The `build` feature, which includes `train`, lets the build script of a
 dependent crate train its model from data files of that crate. The model is
 then trained again whenever a data file changes, and never at run time. The
 build script depends on the library with the feature, and the crate itself
-depends on it without the feature, so the compiled crate contains no
-training code.
+depends on it without the feature. With feature resolver 2 or later, Cargo
+builds the two apart, so the compiled crate contains no training code.
 
 A build reads the files, trains or fine-tunes, and writes the model bytes to
 `<name>.s2fp` in the output directory that Cargo gives the build script. It
@@ -305,19 +305,23 @@ validation files, and write thresholds chosen on them to
 `<name>.thresholds` in the form of `Thresholds::to_bytes`. Two macros that
 need no feature embed both files in the dependent crate and validate them
 when they are loaded. Files are written only after everything else
-succeeded.
+succeeded, and a build without thresholds removes those of an earlier build,
+which Cargo would otherwise keep.
 
 The build tells Cargo to run it again when a data file or one of its
-environment variables changes. `STRING2FINGERPRINT_MODEL_<NAME>` names a
-model file that is validated and used in place of training, so that a crate
-can be built with a model trained elsewhere or without its data.
+environment variables changes, so every path must be UTF-8 without a line
+break. A name is lowercase ASCII letters, digits, and `_`, which gives each
+name a variable of its own. `STRING2FINGERPRINT_MODEL_<NAME>` names a model
+file that is validated and used in place of training, with a warning, so
+that a crate can be built with a model trained elsewhere or without its
+data.
 `STRING2FINGERPRINT_TRAIN_THREADS` sets the number of threads, which
 otherwise follows the number of jobs of the build. Training is
 deterministic, so neither changes the model.
 
 The build host must be Linux, because the build script links the library.
-Data files are trusted input: whoever controls them chooses what the model
-flags.
+Data files and the variables are trusted input: whoever controls them
+chooses what the model flags.
 
 ### Determinism
 

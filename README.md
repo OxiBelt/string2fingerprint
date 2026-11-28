@@ -214,6 +214,12 @@ opt-level = 3
 opt-level = 3
 ```
 
+The two dependencies are built apart with feature resolver 2 or later, the
+default from edition 2021 on; a virtual workspace needs `resolver = "2"`.
+Cargo reads profiles only from the root manifest of the workspace that is
+built, so when your crate is a workspace member or a dependency of another
+crate, the profile belongs in that root manifest.
+
 In `build.rs`:
 
 ```rust
@@ -252,8 +258,10 @@ let flagged = Scorer::with_model(model).score(input).flagged(&THRESHOLDS);
 
 `ModelBuild::run` returns the evaluation on the held-out samples, so that
 the build script can fail the build when the model is not good enough. Set
-`STRING2FINGERPRINT_MODEL_WAF` to the path of a model file to build with that
-model in place of training. `tests/downstream/` is a complete example, and
+`STRING2FINGERPRINT_MODEL_WAF` to the path of a model file, relative to the
+package directory, to build with that model in place of training. The build
+then prints a warning that names the file. `tests/downstream/` is a complete
+example, and
 the [design document](docs/design.md#training-while-compiling) specifies the
 build.
 
